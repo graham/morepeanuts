@@ -1,0 +1,50 @@
+# This is the more peanuts config
+
+[[server]]
+    # type = "direct" # default currently the only option.
+
+    [server.host]
+        secure = false 
+        bind = "127.0.0.1" # what ip should the server bind to.
+        port = 9090        # what port
+
+        # fully qualified domain name, this is the domain the user
+        # will be redirected to after authenticating with google.
+        fqdn = "http://127.0.0.1:9090"
+
+        ssl_certificate = "/etc/ssl/server.pem"
+        ssl_certificate_key = "/etc/ssl/server.pem"
+
+        # If false, both the oauth and identity cookie will be removed
+        # before the connection is forwarded to the backend.
+        # If true, the cookies are decoded and passed to the backend as
+        # base64 encoded json strings.
+        cookie_passthrough = true
+        cookie_encryption_key = "aaaaaaaaaaaaaaaa"
+    
+    [server.target]
+        # backend to forward your connections to
+        url = "http://127.0.0.1:3000"
+
+    [server.authentication]
+        # cookie used for tracking authentication.
+        cookie_name = "peanut_authentication_key"
+        cookie_duration_days = 30
+
+        # oauth creds. Scopes are required on login, additional scopes can be requested.
+        client_id = ""
+        client_secret = ""
+        scopes = [ "https://www.googleapis.com/auth/userinfo.email" ]
+
+    [server.authorization]
+        # name of cookie used for ident
+        cookie_name = "peanut_identity_key"
+
+        # If required_auth is true, no pages are available without a valid auth token.
+        require_auth = false
+
+        # If true any valid oauth2 credentials are passed, if false, only accounts
+        # in the allow list are allowed.
+        allow_all = false
+        allow_list = [ "your_email@gmail.com" ]
+        allow_args = [ ["permission_name", "myservice"] ]

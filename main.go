@@ -415,7 +415,7 @@ func main() {
 				config.Authentication.CookieDurationDays,
 			))
 
-			fmt.Fprintln(w, TempOauthConfig.AuthCodeURL(randomToken))
+			fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken)))
 		})
 
 		router.GET("/_/hello/:name", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {

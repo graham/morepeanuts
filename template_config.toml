@@ -45,6 +45,6 @@
 
         # If true any valid oauth2 credentials are passed, if false, only accounts
         # in the allow list are allowed.
-        allow_all = false
+        allow_all = true
         allow_list = [ "your_email@gmail.com" ]
         allow_args = [ ["permission_name", "myservice"] ]

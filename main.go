@@ -84,7 +84,6 @@ func (t *MyTransport) EmailHasAccess(email string) (bool, string) {
 		}
 		return hit, "User Not Allowed"
 	}
-
 	return true, ""
 }
 
@@ -93,8 +92,11 @@ func (t *MyTransport) RoundTrip(req *http.Request) (resp *http.Response, err err
 
 	if err != nil {
 		if t.Config.Authorization.RequireAuth == true {
+			target := fmt.Sprintf("/_/login?next=%s", req.RequestURI)
 			resp := http.Response{
-				Body: ioutil.NopCloser(strings.NewReader("Auth required.")),
+				Body: ioutil.NopCloser(strings.NewReader(
+					HtmlRedirect(target),
+				)),
 			}
 			return &resp, nil
 		} else {
@@ -219,6 +221,40 @@ func HtmlRedirect(url string) string {
 	return fmt.Sprintf("<html><meta http-equiv=\"refresh\" content=\"0;url='%s'\" /></html>", url)
 }
 
+func EnsureSaneDefaults(config *ServerConfigItem) {
+	if config.Host.Bind == "" {
+		config.Host.Bind = "127.0.0.1"
+	}
+
+	if config.Authentication.CookieDurationDays < 1 {
+		config.Authentication.CookieDurationDays = 7
+	}
+
+	if config.Authentication.CookieName == "" {
+		config.Authentication.CookieName = "peanut_authentication_key"
+	}
+
+	if config.Authorization.CookieName == "" {
+		config.Authorization.CookieName = "peanut_identity_key"
+	}
+
+	if config.Authentication.CookieName == config.Authorization.CookieName {
+		panic("Authentication Cookie and Authorization Cookie can't be the same.")
+	}
+
+	if config.Authentication.ClientID == "" {
+		panic("No OAuth ClientID set.")
+	}
+
+	if config.Authentication.ClientSecret == "" {
+		panic("No OAuth ClientSecret set.")
+	}
+
+	if len(config.Authentication.Scopes) == 0 {
+		panic("No OAuth Scopes set.")
+	}
+}
+
 func main() {
 	done := make(chan bool, 1)
 
@@ -235,6 +271,10 @@ func main() {
 
 	if err != nil {
 		panic(err)
+	}
+
+	for _, config := range config.Servers {
+		EnsureSaneDefaults(&config)
 	}
 
 	for _, config := range config.Servers {
@@ -306,6 +346,9 @@ func main() {
 			urlState := queryValues.Get("state")
 
 			if urlState != cookie.Value {
+				http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
+				http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
+				//http.SetCookie(w, MakeCookie("next", "", -101))
 				fmt.Fprintf(w, "<html><body>An error occurred.</body></html>")
 				return
 			}
@@ -332,6 +375,8 @@ func main() {
 			email, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
 
 			if err != nil {
+				http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
+				http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
 				fmt.Fprintf(w, "<html><body>Invalid Token</Body></html>")
 				return
 			}
@@ -396,8 +441,8 @@ func main() {
 
 		router.GET("/_/add_scopes", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 			queryValues := r.URL.Query()
-			scopes := strings.Split(queryValues.Get("scopes"), ",")
 
+			scopes := strings.Split(queryValues.Get("scopes"), ",")
 			scopes = append(scopes, config.Authentication.Scopes...)
 
 			TempOauthConfig := &oauth2.Config{
@@ -414,6 +459,13 @@ func main() {
 				randomToken,
 				config.Authentication.CookieDurationDays,
 			))
+
+			next := queryValues.Get("next")
+			if len(next) > 0 {
+				http.SetCookie(w, MakeCookie("next", next, 1))
+			} else {
+				http.SetCookie(w, MakeCookie("next", "", -101))
+			}
 
 			fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken)))
 		})

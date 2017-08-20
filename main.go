@@ -100,11 +100,11 @@ func (t *MyTransport) RoundTrip(req *http.Request) (resp *http.Response, err err
 			}
 			return &resp, nil
 		} else {
-			req.Header.Set("X-Peanut-Auth", "")
+			req.Header.Set("X-Suez-Auth", "")
 		}
 	} else {
 		email, _ := Decrypt(t.Config.Host.CookieEncryptionKey, cookie.Value)
-		req.Header.Set("X-Peanut-Auth", email)
+		req.Header.Set("X-Suez-Auth", email)
 
 		allowed, reason := t.EmailHasAccess(email)
 		if allowed == false {
@@ -231,11 +231,11 @@ func EnsureSaneDefaults(config *ServerConfigItem) {
 	}
 
 	if config.Authentication.CookieName == "" {
-		config.Authentication.CookieName = "peanut_authentication_key"
+		config.Authentication.CookieName = "suez_authentication_key"
 	}
 
 	if config.Authorization.CookieName == "" {
-		config.Authorization.CookieName = "peanut_identity_key"
+		config.Authorization.CookieName = "suez_identity_key"
 	}
 
 	if config.Authentication.CookieName == config.Authorization.CookieName {

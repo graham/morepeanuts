@@ -1,4 +1,4 @@
-# This is the more peanuts config
+# This is the Suez config
 
 [[server]]
     # type = "direct" # default currently the only option.
@@ -28,7 +28,7 @@
 
     [server.authentication]
         # cookie used for tracking authentication.
-        cookie_name = "peanut_authentication_key"
+        cookie_name = "suez_authentication_key"
         cookie_duration_days = 30
 
         # oauth creds. Scopes are required on login, additional scopes can be requested.
@@ -38,7 +38,7 @@
 
     [server.authorization]
         # name of cookie used for ident
-        cookie_name = "peanut_identity_key"
+        cookie_name = "suez_identity_key"
 
         # If required_auth is true, no pages are available without a valid auth token.
         require_auth = false

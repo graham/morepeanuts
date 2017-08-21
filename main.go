@@ -53,8 +53,11 @@ type ServerConfigItem struct {
 		ClientID           string   `toml:"client_id"`
 		ClientSecret       string   `toml:"client_secret"`
 		Scopes             []string `toml:"scopes"`
-		CookieName         string   `toml:"cookie_name"`
-		CookieDurationDays int      `toml:"cookie_duration_days"`
+		StrEndpoint        string   `toml:"endpoint"`
+		Endpoint           oauth2.Endpoint
+		UserInfoUrl        string `toml:"user_info_url"`
+		CookieName         string `toml:"cookie_name"`
+		CookieDurationDays int    `toml:"cookie_duration_days"`
 	} `toml:"authentication"`
 
 	Authorization struct {
@@ -125,7 +128,7 @@ func (t *MyTransport) RoundTrip(req *http.Request) (resp *http.Response, err err
 				continue
 			} else {
 				newValue, _ := Decrypt(t.Config.Host.CookieEncryptionKey, i.Value)
-				i.Value = base64.StdEncoding.EncodeToString([]byte(newValue))
+				i.Value = base64.URLEncoding.EncodeToString([]byte(newValue))
 			}
 		}
 		remaining_cookies = append(remaining_cookies, i.String())
@@ -165,7 +168,7 @@ func Encrypt(key string, text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	b := base64.StdEncoding.EncodeToString([]byte(text))
+	b := base64.URLEncoding.EncodeToString([]byte(text))
 	ciphertext := make([]byte, aes.BlockSize+len(b))
 	iv := ciphertext[:aes.BlockSize]
 	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
@@ -173,12 +176,12 @@ func Encrypt(key string, text string) (string, error) {
 	}
 	cfb := cipher.NewCFBEncrypter(block, iv)
 	cfb.XORKeyStream(ciphertext[aes.BlockSize:], []byte(b))
-	bc := base64.StdEncoding.EncodeToString(ciphertext)
+	bc := base64.URLEncoding.EncodeToString(ciphertext)
 	return bc, nil
 }
 
 func Decrypt(key, b64text string) (string, error) {
-	text, _ := base64.StdEncoding.DecodeString(b64text)
+	text, _ := base64.URLEncoding.DecodeString(b64text)
 	if len(key) == 0 {
 		return string(text), nil
 	}
@@ -193,7 +196,7 @@ func Decrypt(key, b64text string) (string, error) {
 	text = text[aes.BlockSize:]
 	cfb := cipher.NewCFBDecrypter(block, iv)
 	cfb.XORKeyStream(text, text)
-	data, err := base64.StdEncoding.DecodeString(string(text))
+	data, err := base64.URLEncoding.DecodeString(string(text))
 	if err != nil {
 		return "", err
 	}
@@ -214,14 +217,36 @@ func MakeCookie(key string, value string, days int) *http.Cookie {
 func GenRandomString() string {
 	b := make([]byte, 32)
 	rand.Read(b)
-	return base64.StdEncoding.EncodeToString(b)
+	return base64.URLEncoding.EncodeToString(b)
 }
 
 func HtmlRedirect(url string) string {
 	return fmt.Sprintf("<html><meta http-equiv=\"refresh\" content=\"0;url='%s'\" /></html>", url)
 }
 
-func EnsureSaneDefaults(config *ServerConfigItem) {
+func getIdentityWithClient(config ServerConfigItem, client *http.Client) (string, error) {
+	// This part is very google dependent.
+	email, err := client.Get(config.Authentication.UserInfoUrl)
+
+	if err != nil {
+		return "", err
+	}
+
+	defer email.Body.Close()
+
+	data, _ := ioutil.ReadAll(email.Body)
+
+	var user User
+	err = json.Unmarshal(data, &user)
+
+	if err != nil {
+		return "", err
+	}
+
+	return user.Email, nil
+}
+
+func EnsureSaneDefaults(config *ServerConfigItem) ServerConfigItem {
 	if config.Host.Bind == "" {
 		config.Host.Bind = "127.0.0.1"
 	}
@@ -251,8 +276,15 @@ func EnsureSaneDefaults(config *ServerConfigItem) {
 	}
 
 	if len(config.Authentication.Scopes) == 0 {
-		panic("No OAuth Scopes set.")
+		log.Println("No scope set, using default of https://www.googleapis.com/auth/userinfo.email")
+		config.Authentication.Scopes = []string{
+			"https://www.googleapis.com/auth/userinfo.email",
+		}
 	}
+
+	config.Authentication.Endpoint = google.Endpoint
+	config.Authentication.UserInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo"
+	return *config
 }
 
 func main() {
@@ -274,10 +306,8 @@ func main() {
 	}
 
 	for _, config := range config.Servers {
-		EnsureSaneDefaults(&config)
-	}
+		config = EnsureSaneDefaults(&config)
 
-	for _, config := range config.Servers {
 		router := httprouter.New()
 
 		target, _ := url.Parse(config.Target.Url)
@@ -291,7 +321,7 @@ func main() {
 			ClientSecret: config.Authentication.ClientSecret,
 			RedirectURL:  fmt.Sprintf("%s/_/auth", config.Host.FQDN),
 			Scopes:       config.Authentication.Scopes,
-			Endpoint:     google.Endpoint,
+			Endpoint:     config.Authentication.Endpoint,
 		}
 
 		router.GET("/_/login", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
@@ -313,8 +343,8 @@ func main() {
 					config.Authentication.CookieDurationDays,
 				),
 			)
-
-			fmt.Fprintln(w, HtmlRedirect(config.OauthConfig.AuthCodeURL(randomToken)))
+			url := config.OauthConfig.AuthCodeURL(randomToken)
+			fmt.Fprintln(w, HtmlRedirect(url))
 		})
 
 		router.GET("/_/logout", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
@@ -370,27 +400,18 @@ func main() {
 			))
 
 			client := config.OauthConfig.Client(oauth2.NoContext, tok)
+			email, email_err := getIdentityWithClient(config, client)
 
-			// This part is very google dependent.
-			email, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
-
-			if err != nil {
+			if email_err != nil {
 				http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
 				http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
-				fmt.Fprintf(w, "<html><body>Invalid Token</Body></html>")
+				fmt.Fprintf(w, "<html><body>Invalid Token %s</Body></html>", email_err)
 				return
 			}
 
-			defer email.Body.Close()
-
-			data, _ := ioutil.ReadAll(email.Body)
-
-			var user User
-			json.Unmarshal(data, &user)
-
 			ident_enc_value, _ := Encrypt(
 				config.Host.CookieEncryptionKey,
-				user.Email,
+				email,
 			)
 			http.SetCookie(w, MakeCookie(
 				config.Authorization.CookieName,
@@ -422,17 +443,15 @@ func main() {
 
 			json.Unmarshal([]byte(decrypted_code), &tok)
 			client := config.OauthConfig.Client(oauth2.NoContext, &tok)
-			email, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
+			email, email_err := getIdentityWithClient(config, client)
 
-			if err != nil {
-				log.Println(err)
+			if email_err != nil {
+				log.Println(email_err)
 				fmt.Fprintf(w, "<html><body>Invalid Token</Body></html>")
 				return
 			}
 
-			defer email.Body.Close()
-			data, _ := ioutil.ReadAll(email.Body)
-			fmt.Fprintf(w, "<html><body>%s</body></html>", data)
+			fmt.Fprintf(w, "<html><body>%s</body></html>", email)
 		})
 
 		router.GET("/_/landing", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
@@ -450,7 +469,7 @@ func main() {
 				ClientSecret: config.Authentication.ClientSecret,
 				RedirectURL:  fmt.Sprintf("%s/_/auth", config.Host.FQDN),
 				Scopes:       scopes,
-				Endpoint:     google.Endpoint,
+				Endpoint:     config.Authentication.Endpoint,
 			}
 
 			randomToken := GenRandomString()

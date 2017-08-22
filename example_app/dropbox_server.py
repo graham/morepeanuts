@@ -18,7 +18,7 @@ app = Flask(__name__)
 def showme():
     token = json.loads(
         base64.urlsafe_b64decode(
-            str(request.cookies.get(';;suez_authentication_key'))
+            str(request.cookies.get('suez_authentication_key'))
         )
     )
 

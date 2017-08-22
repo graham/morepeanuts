@@ -121,7 +121,7 @@ func (t *MyTransport) RoundTrip(req *http.Request) (resp *http.Response, err err
 	}
 
 	cookies := req.Cookies()
-	remaining_cookies := make([]string, len(cookies))
+	remaining_cookies := make([]string, 0)
 
 	for _, i := range cookies {
 		if i.Name == t.Config.Authentication.CookieName ||

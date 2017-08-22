@@ -84,18 +84,19 @@ Failed to retrieve your client info.
 		service, err := google_calendar.New(client)
 
 		if err != nil {
-			fmt.Fprintf(w, "You haven't added calendar scope yet<br>")
-			fmt.Fprintf(w, `		
-Now add a scope:
-<a href="/_/add_scopes?next=/showme&scopes=https://www.googleapis.com/auth/calendar.readonly">Add Calendar Scope</a>
-`)
+			fmt.Fprintf(w, "%s", err)
+			return
 		} else {
 			t := time.Now().Format(time.RFC3339)
 			events, err := service.Events.List("primary").ShowDeleted(false).
 				SingleEvents(true).TimeMin(t).MaxResults(10).OrderBy("startTime").Do()
 
 			if err != nil {
-				fmt.Fprintf(w, "%s", err)
+				fmt.Fprintf(w, "You haven't added calendar scope yet<br>")
+				fmt.Fprintf(w, `
+Now add a scope:
+<a href="/_/add_scopes?next=/showme&scopes=https://www.googleapis.com/auth/calendar.readonly">Add Calendar Scope</a>
+`)
 				return
 			}
 
@@ -110,7 +111,7 @@ Now add a scope:
 				} else {
 					when = i.Start.Date
 				}
-				fmt.Fprintf(w, "<div>%s (%s)</div>", i.Summary, when)
+				fmt.Fprintf(w, "<div>%s (%s)</div>", when, i.Summary)
 			}
 
 			fmt.Fprintf(w, "</div>")

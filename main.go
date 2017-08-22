@@ -278,7 +278,7 @@ func getIdentityWithClient(config ServerConfigItem, client *http.Client) (string
 	return user.Email, nil
 }
 
-func EnsureSaneDefaults(config *ServerConfigItem) ServerConfigItem {
+func EnsureSaneDefaults(config ServerConfigItem) ServerConfigItem {
 	if config.Host.Bind == "" {
 		config.Host.Bind = "127.0.0.1"
 	}
@@ -328,7 +328,7 @@ func EnsureSaneDefaults(config *ServerConfigItem) ServerConfigItem {
 		config.Authentication.UserInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo"
 	}
 
-	return *config
+	return config
 }
 
 func main() {
@@ -350,216 +350,221 @@ func main() {
 	}
 
 	for _, config := range config.Servers {
-		config = EnsureSaneDefaults(&config)
-
-		router := httprouter.New()
-
-		target, _ := url.Parse(config.Target.Url)
-		tp := MyTransport{http.DefaultTransport, config}
-
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		proxy.Transport = &tp
-
-		config.OauthConfig = &oauth2.Config{
-			ClientID:     config.Authentication.ClientID,
-			ClientSecret: config.Authentication.ClientSecret,
-			RedirectURL:  fmt.Sprintf("%s/_/auth", config.Host.FQDN),
-			Scopes:       config.Authentication.InitScopes,
-			Endpoint:     config.Authentication.Endpoint,
-		}
-
-		router.GET("/_/login", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-			queryValues := r.URL.Query()
-			next := queryValues.Get("next")
-
-			if len(next) > 0 {
-				http.SetCookie(w, MakeCookie("next", next, 1))
-			} else {
-				http.SetCookie(w, MakeCookie("next", "", -101))
-			}
-
-			randomToken := GenRandomString()
-
-			http.SetCookie(w,
-				MakeCookie(
-					config.Authentication.CookieName,
-					randomToken,
-					config.Authentication.CookieDurationDays,
-				),
-			)
-
-			options := OptionsFromQuery(config, queryValues)
-
-			url := config.OauthConfig.AuthCodeURL(randomToken, options...)
-			fmt.Fprintln(w, HtmlRedirect(url))
-		})
-
-		router.GET("/_/logout", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-			queryValues := r.URL.Query()
-			next := queryValues.Get("next")
-
-			http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
-			http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
-
-			if len(next) == 0 {
-				fmt.Fprintf(w, "<html><body>You have been logged out.</body></html>")
-			} else {
-				fmt.Fprintf(w, HtmlRedirect(next))
-				http.SetCookie(w, MakeCookie("next", "/", -100))
-			}
-		})
-
-		router.GET("/_/auth", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-			cookie, err := r.Cookie(config.Authentication.CookieName)
-
-			if err != nil {
-				http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
-				http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
-				fmt.Fprintln(w, HtmlRedirect("/_/login"))
-				return
-			}
-
-			queryValues := r.URL.Query()
-			urlState := queryValues.Get("state")
-
-			if urlState != cookie.Value {
-				http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
-				http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
-				//http.SetCookie(w, MakeCookie("next", "", -101))
-				fmt.Fprintf(w, "<html><body>An error occurred.</body></html>")
-				return
-			}
-
-			code := queryValues.Get("code")
-			tok, terr := config.OauthConfig.Exchange(oauth2.NoContext, code)
-
-			if terr != nil {
-				panic(terr)
-			}
-
-			b, _ := json.Marshal(tok)
-
-			enc_value, _ := Encrypt(config.Host.CookieEncryptionKey, string(b))
-			http.SetCookie(w, MakeCookie(
-				config.Authentication.CookieName,
-				enc_value,
-				config.Authentication.CookieDurationDays,
-			))
-
-			client := config.OauthConfig.Client(oauth2.NoContext, tok)
-			email, email_err := getIdentityWithClient(config, client)
-
-			if email_err != nil {
-				http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
-				http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
-				fmt.Fprintf(w, "<html><body>Invalid Token %s</Body></html>", email_err)
-				return
-			}
-
-			ident_enc_value, _ := Encrypt(
-				config.Host.CookieEncryptionKey,
-				email,
-			)
-			http.SetCookie(w, MakeCookie(
-				config.Authorization.CookieName,
-				ident_enc_value,
-				config.Authentication.CookieDurationDays,
-			))
-
-			cookie, err = r.Cookie("next")
-			if err != nil {
-				fmt.Fprintf(w, HtmlRedirect("/_/test"))
-				http.SetCookie(w, MakeCookie("next", "", -100))
-			} else {
-				url := cookie.Value
-				fmt.Fprintf(w, HtmlRedirect(url))
-				http.SetCookie(w, MakeCookie("next", "", -100))
-			}
-		})
-
-		router.GET("/_/test", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-			cookie, err := r.Cookie(config.Authentication.CookieName)
-			var tok oauth2.Token
-
-			if err != nil {
-				fmt.Fprintf(w, "<html><body>Not logged in</body></html>")
-				return
-			}
-
-			decrypted_code, _ := Decrypt(config.Host.CookieEncryptionKey, cookie.Value)
-
-			json.Unmarshal([]byte(decrypted_code), &tok)
-			client := config.OauthConfig.Client(oauth2.NoContext, &tok)
-			email, email_err := getIdentityWithClient(config, client)
-
-			if email_err != nil {
-				log.Println(email_err)
-				fmt.Fprintf(w, "<html><body>Invalid Token</Body></html>")
-				return
-			}
-
-			fmt.Fprintf(w, "<html><body>%s</body></html>", email)
-		})
-
-		router.GET("/_/landing", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-			fmt.Fprintf(w, "<html><body><a href='/_/login'>Login</a></body></html>")
-		})
-
-		router.GET("/_/add_scopes", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-			queryValues := r.URL.Query()
-
-			scopes := strings.Split(queryValues.Get("scopes"), ",")
-			scopes = append(scopes, config.Authentication.InitScopes...)
-
-			TempOauthConfig := &oauth2.Config{
-				ClientID:     config.Authentication.ClientID,
-				ClientSecret: config.Authentication.ClientSecret,
-				RedirectURL:  fmt.Sprintf("%s/_/auth", config.Host.FQDN),
-				Scopes:       scopes,
-				Endpoint:     config.Authentication.Endpoint,
-			}
-
-			randomToken := GenRandomString()
-			http.SetCookie(w, MakeCookie(
-				config.Authentication.CookieName,
-				randomToken,
-				config.Authentication.CookieDurationDays,
-			))
-
-			next := queryValues.Get("next")
-			if len(next) > 0 {
-				http.SetCookie(w, MakeCookie("next", next, 1))
-			} else {
-				http.SetCookie(w, MakeCookie("next", "", -101))
-			}
-
-			options := OptionsFromQuery(config, queryValues)
-
-			fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken, options...)))
-		})
-
-		router.GET("/_/hello/:name", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-			fmt.Fprintf(w, "hello, %s!\n", ps.ByName("name"))
-		})
-
-		router.NotFound = proxy
-
-		go func(c ServerConfigItem, r *httprouter.Router) {
-			if c.Host.IsSecure == true {
-				log.Fatal(http.ListenAndServeTLS(
-					fmt.Sprintf("%s:%d", c.Host.Bind, c.Host.Port),
-					c.Host.SSLCertificatePath,
-					c.Host.SSLCertificateKeyPath,
-					handlers.LoggingHandler(os.Stdout, r)),
-				)
-			} else {
-				log.Fatal(http.ListenAndServe(
-					fmt.Sprintf("%s:%d", c.Host.Bind, c.Host.Port),
-					handlers.LoggingHandler(os.Stdout, r)),
-				)
-			}
-		}(config, router)
+		config = EnsureSaneDefaults(config)
+		setupServer(config)
 	}
 
 	<-done
+}
+
+func setupServer(config ServerConfigItem) {
+
+	router := httprouter.New()
+
+	target, _ := url.Parse(config.Target.Url)
+	tp := MyTransport{http.DefaultTransport, config}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = &tp
+
+	config.OauthConfig = &oauth2.Config{
+		ClientID:     config.Authentication.ClientID,
+		ClientSecret: config.Authentication.ClientSecret,
+		RedirectURL:  fmt.Sprintf("%s/_/auth", config.Host.FQDN),
+		Scopes:       config.Authentication.InitScopes,
+		Endpoint:     config.Authentication.Endpoint,
+	}
+
+	router.GET("/_/login", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		queryValues := r.URL.Query()
+		next := queryValues.Get("next")
+
+		if len(next) > 0 {
+			http.SetCookie(w, MakeCookie("next", next, 1))
+		} else {
+			http.SetCookie(w, MakeCookie("next", "", -101))
+		}
+
+		randomToken := GenRandomString()
+
+		http.SetCookie(w,
+			MakeCookie(
+				config.Authentication.CookieName,
+				randomToken,
+				config.Authentication.CookieDurationDays,
+			),
+		)
+
+		options := OptionsFromQuery(config, queryValues)
+
+		url := config.OauthConfig.AuthCodeURL(randomToken, options...)
+		fmt.Fprintln(w, HtmlRedirect(url))
+	})
+
+	router.GET("/_/logout", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		queryValues := r.URL.Query()
+		next := queryValues.Get("next")
+
+		http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
+		http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
+
+		if len(next) == 0 {
+			fmt.Fprintf(w, "<html><body>You have been logged out.</body></html>")
+		} else {
+			fmt.Fprintf(w, HtmlRedirect(next))
+			http.SetCookie(w, MakeCookie("next", "/", -100))
+		}
+	})
+
+	router.GET("/_/auth", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		cookie, err := r.Cookie(config.Authentication.CookieName)
+
+		if err != nil {
+			http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
+			http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
+			fmt.Fprintln(w, HtmlRedirect("/_/login"))
+			return
+		}
+
+		queryValues := r.URL.Query()
+		urlState := queryValues.Get("state")
+
+		if urlState != cookie.Value {
+			http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
+			http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
+			//http.SetCookie(w, MakeCookie("next", "", -101))
+			fmt.Fprintf(w, "<html><body>An error occurred.</body></html>")
+			return
+		}
+
+		code := queryValues.Get("code")
+		tok, terr := config.OauthConfig.Exchange(oauth2.NoContext, code)
+
+		if terr != nil {
+			panic(terr)
+		}
+
+		b, _ := json.Marshal(tok)
+
+		enc_value, _ := Encrypt(config.Host.CookieEncryptionKey, string(b))
+		http.SetCookie(w, MakeCookie(
+			config.Authentication.CookieName,
+			enc_value,
+			config.Authentication.CookieDurationDays,
+		))
+
+		client := config.OauthConfig.Client(oauth2.NoContext, tok)
+		email, email_err := getIdentityWithClient(config, client)
+
+		if email_err != nil {
+			http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
+			http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
+			fmt.Fprintf(w, "<html><body>Invalid Token %s</Body></html>", email_err)
+			return
+		}
+
+		ident_enc_value, _ := Encrypt(
+			config.Host.CookieEncryptionKey,
+			email,
+		)
+		http.SetCookie(w, MakeCookie(
+			config.Authorization.CookieName,
+			ident_enc_value,
+			config.Authentication.CookieDurationDays,
+		))
+
+		cookie, err = r.Cookie("next")
+		if err != nil {
+			fmt.Fprintf(w, HtmlRedirect("/_/test"))
+			http.SetCookie(w, MakeCookie("next", "", -100))
+		} else {
+			url := cookie.Value
+			fmt.Fprintf(w, HtmlRedirect(url))
+			http.SetCookie(w, MakeCookie("next", "", -100))
+		}
+	})
+
+	router.GET("/_/test", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		cookie, err := r.Cookie(config.Authentication.CookieName)
+		var tok oauth2.Token
+
+		if err != nil {
+			fmt.Fprintf(w, "<html><body>Not logged in</body></html>")
+			return
+		}
+
+		decrypted_code, _ := Decrypt(config.Host.CookieEncryptionKey, cookie.Value)
+
+		json.Unmarshal([]byte(decrypted_code), &tok)
+		client := config.OauthConfig.Client(oauth2.NoContext, &tok)
+		email, email_err := getIdentityWithClient(config, client)
+
+		if email_err != nil {
+			log.Println(email_err)
+			fmt.Fprintf(w, "<html><body>Invalid Token</Body></html>")
+			return
+		}
+
+		fmt.Fprintf(w, "<html><body>%s</body></html>", email)
+	})
+
+	router.GET("/_/landing", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		fmt.Fprintf(w, "<html><body><a href='/_/login'>Login</a></body></html>")
+	})
+
+	router.GET("/_/add_scopes", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		queryValues := r.URL.Query()
+
+		scopes := strings.Split(queryValues.Get("scopes"), ",")
+		scopes = append(scopes, config.Authentication.InitScopes...)
+
+		TempOauthConfig := &oauth2.Config{
+			ClientID:     config.Authentication.ClientID,
+			ClientSecret: config.Authentication.ClientSecret,
+			RedirectURL:  fmt.Sprintf("%s/_/auth", config.Host.FQDN),
+			Scopes:       scopes,
+			Endpoint:     config.Authentication.Endpoint,
+		}
+
+		randomToken := GenRandomString()
+		http.SetCookie(w, MakeCookie(
+			config.Authentication.CookieName,
+			randomToken,
+			config.Authentication.CookieDurationDays,
+		))
+
+		next := queryValues.Get("next")
+		if len(next) > 0 {
+			http.SetCookie(w, MakeCookie("next", next, 1))
+		} else {
+			http.SetCookie(w, MakeCookie("next", "", -101))
+		}
+
+		options := OptionsFromQuery(config, queryValues)
+
+		fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken, options...)))
+	})
+
+	router.GET("/_/hello/:name", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		fmt.Fprintf(w, "hello, %s!\n", ps.ByName("name"))
+	})
+
+	router.NotFound = proxy
+
+	go func(c ServerConfigItem, r *httprouter.Router) {
+		if c.Host.IsSecure == true {
+			log.Fatal(http.ListenAndServeTLS(
+				fmt.Sprintf("%s:%d", c.Host.Bind, c.Host.Port),
+				c.Host.SSLCertificatePath,
+				c.Host.SSLCertificateKeyPath,
+				handlers.LoggingHandler(os.Stdout, r)),
+			)
+		} else {
+			log.Fatal(http.ListenAndServe(
+				fmt.Sprintf("%s:%d", c.Host.Bind, c.Host.Port),
+				handlers.LoggingHandler(os.Stdout, r)),
+			)
+		}
+	}(config, router)
+
 }

@@ -133,7 +133,10 @@ func (t *MyTransport) RoundTrip(req *http.Request) (resp *http.Response, err err
 				i.Value = base64.URLEncoding.EncodeToString([]byte(newValue))
 			}
 		}
-		remaining_cookies = append(remaining_cookies, i.String())
+		remaining_cookies = append(
+			remaining_cookies,
+			MakeCookie(i.Name, i.Value, 1).String(),
+		)
 	}
 
 	req.Header.Set("Cookie", strings.Join(remaining_cookies, ";"))

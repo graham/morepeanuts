@@ -1,0 +1,12 @@
+
+Must have:
+ - [ ] Per login auth log
+ - [ ] Be more clear about authentication vs authorization vs identity
+ - [x] Support offline and force requests.
+
+
+Nice to have:
+ - [ ] Non-Google support. (almost)
+ - [ ] Backend Example.
+ 
+

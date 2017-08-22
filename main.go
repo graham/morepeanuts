@@ -52,7 +52,7 @@ type ServerConfigItem struct {
 	Authentication struct {
 		ClientID           string   `toml:"client_id"`
 		ClientSecret       string   `toml:"client_secret"`
-		Scopes             []string `toml:"scopes"`
+		InitScopes         []string `toml:"init_scopes"`
 		StrEndpoint        string   `toml:"endpoint"`
 		Endpoint           oauth2.Endpoint
 		UserInfoUrl        string `toml:"user_info_url"`
@@ -103,7 +103,7 @@ func (t *MyTransport) RoundTrip(req *http.Request) (resp *http.Response, err err
 			}
 			return &resp, nil
 		} else {
-			req.Header.Set("X-Suez-Auth", "")
+			req.Header.Set("X-Suez-Identity", "")
 		}
 	} else {
 		email, _ := Decrypt(t.Config.Host.CookieEncryptionKey, cookie.Value)
@@ -220,6 +220,22 @@ func GenRandomString() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
+func OptionsFromQuery(values url.Values) []oauth2.AuthCodeOption {
+	options := []oauth2.AuthCodeOption{}
+
+	if values.Get("force") == "1" {
+		options = append(options, oauth2.ApprovalForce)
+	}
+
+	if values.Get("offline") == "1" {
+		options = append(options, oauth2.AccessTypeOffline)
+	}
+
+	// Since oauth2.AccessTypeOnline is default, we'll just leave.
+
+	return options
+}
+
 func HtmlRedirect(url string) string {
 	return fmt.Sprintf("<html><meta http-equiv=\"refresh\" content=\"0;url='%s'\" /></html>", url)
 }
@@ -275,15 +291,16 @@ func EnsureSaneDefaults(config *ServerConfigItem) ServerConfigItem {
 		panic("No OAuth ClientSecret set.")
 	}
 
-	if len(config.Authentication.Scopes) == 0 {
+	if len(config.Authentication.InitScopes) == 0 {
 		log.Println("No scope set, using default of https://www.googleapis.com/auth/userinfo.email")
-		config.Authentication.Scopes = []string{
+		config.Authentication.InitScopes = []string{
 			"https://www.googleapis.com/auth/userinfo.email",
 		}
 	}
 
 	config.Authentication.Endpoint = google.Endpoint
 	config.Authentication.UserInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo"
+
 	return *config
 }
 
@@ -320,7 +337,7 @@ func main() {
 			ClientID:     config.Authentication.ClientID,
 			ClientSecret: config.Authentication.ClientSecret,
 			RedirectURL:  fmt.Sprintf("%s/_/auth", config.Host.FQDN),
-			Scopes:       config.Authentication.Scopes,
+			Scopes:       config.Authentication.InitScopes,
 			Endpoint:     config.Authentication.Endpoint,
 		}
 
@@ -343,7 +360,10 @@ func main() {
 					config.Authentication.CookieDurationDays,
 				),
 			)
-			url := config.OauthConfig.AuthCodeURL(randomToken)
+
+			options := OptionsFromQuery(queryValues)
+
+			url := config.OauthConfig.AuthCodeURL(randomToken, options...)
 			fmt.Fprintln(w, HtmlRedirect(url))
 		})
 
@@ -462,7 +482,7 @@ func main() {
 			queryValues := r.URL.Query()
 
 			scopes := strings.Split(queryValues.Get("scopes"), ",")
-			scopes = append(scopes, config.Authentication.Scopes...)
+			scopes = append(scopes, config.Authentication.InitScopes...)
 
 			TempOauthConfig := &oauth2.Config{
 				ClientID:     config.Authentication.ClientID,
@@ -486,7 +506,9 @@ func main() {
 				http.SetCookie(w, MakeCookie("next", "", -101))
 			}
 
-			fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken)))
+			options := OptionsFromQuery(queryValues)
+
+			fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken, options...)))
 		})
 
 		router.GET("/_/hello/:name", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {

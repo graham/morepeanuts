@@ -32,6 +32,7 @@
         cookie_duration_days = 30
 
         # oauth creds. Scopes are required on login, additional scopes can be requested.
+        # Google
         client_id = ""
         client_secret = ""
         init_scopes = [ "https://www.googleapis.com/auth/userinfo.email" ]
@@ -41,6 +42,19 @@
         ]
         user_info_url = "https://www.googleapis.com/oauth2/v3/userinfo"
 
+        # Dropbox
+        #
+        # init_scopes = [ " " ]
+        # endpoint = [
+        #     "https://www.dropbox.com/oauth2/authorize",
+        #     "https://www.dropbox.com/oauth2/token",
+        # ]
+        # # i don't know why dropbox uses a different kwarg than google.
+        # add_values = [
+        #   [ "redirect_uri", "http://127.0.0.1:9090/_/auth"],
+        # ]       
+        # user_info_url = "https://api.dropboxapi.com/2/users/get_current_account"
+        # user_info_post = true
 
     [server.authorization]
         # name of cookie used for ident

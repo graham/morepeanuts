@@ -7,7 +7,7 @@ Must have:
 
 Nice to have:
  - [x] Google support.
- - [ ] Dropbox (or any oauth2 support).
+ - [x] Dropbox (or any oauth2 support).
  - [x] Backend Example golang
  - [x] backend example python (sorta)
  

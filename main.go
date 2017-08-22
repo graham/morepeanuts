@@ -50,14 +50,16 @@ type ServerConfigItem struct {
 	} `toml:"target"`
 
 	Authentication struct {
-		ClientID           string   `toml:"client_id"`
-		ClientSecret       string   `toml:"client_secret"`
-		InitScopes         []string `toml:"init_scopes"`
-		StrEndpoint        string   `toml:"endpoint"`
+		ClientID           string     `toml:"client_id"`
+		ClientSecret       string     `toml:"client_secret"`
+		InitScopes         []string   `toml:"init_scopes"`
+		StrEndpoint        []string   `toml:"endpoint"`
+		AddValues          [][]string `toml:"add_values"`
+		UserInfoUrl        string     `toml:"user_info_url"`
+		UserInfoPost       bool       `toml:"user_info_post"`
+		CookieName         string     `toml:"cookie_name"`
+		CookieDurationDays int        `toml:"cookie_duration_days"`
 		Endpoint           oauth2.Endpoint
-		UserInfoUrl        string `toml:"user_info_url"`
-		CookieName         string `toml:"cookie_name"`
-		CookieDurationDays int    `toml:"cookie_duration_days"`
 	} `toml:"authentication"`
 
 	Authorization struct {
@@ -220,7 +222,7 @@ func GenRandomString() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-func OptionsFromQuery(values url.Values) []oauth2.AuthCodeOption {
+func OptionsFromQuery(config ServerConfigItem, values url.Values) []oauth2.AuthCodeOption {
 	options := []oauth2.AuthCodeOption{}
 
 	if values.Get("force") == "1" {
@@ -233,6 +235,10 @@ func OptionsFromQuery(values url.Values) []oauth2.AuthCodeOption {
 
 	// Since oauth2.AccessTypeOnline is default, we'll just leave.
 
+	for _, row := range config.Authentication.AddValues {
+		options = append(options, oauth2.SetAuthURLParam(row[0], row[1]))
+	}
+
 	return options
 }
 
@@ -242,7 +248,14 @@ func HtmlRedirect(url string) string {
 
 func getIdentityWithClient(config ServerConfigItem, client *http.Client) (string, error) {
 	// This part is very google dependent.
-	email, err := client.Get(config.Authentication.UserInfoUrl)
+	var email *http.Response
+	var err error
+
+	if config.Authentication.UserInfoPost {
+		email, err = client.Post(config.Authentication.UserInfoUrl, "", nil)
+	} else {
+		email, err = client.Get(config.Authentication.UserInfoUrl)
+	}
 
 	if err != nil {
 		return "", err
@@ -298,8 +311,19 @@ func EnsureSaneDefaults(config *ServerConfigItem) ServerConfigItem {
 		}
 	}
 
-	config.Authentication.Endpoint = google.Endpoint
-	config.Authentication.UserInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo"
+	if len(config.Authentication.StrEndpoint) > 0 {
+		config.Authentication.Endpoint = oauth2.Endpoint{
+			AuthURL:  config.Authentication.StrEndpoint[0],
+			TokenURL: config.Authentication.StrEndpoint[1],
+		}
+	} else {
+		config.Authentication.Endpoint = google.Endpoint
+	}
+
+	if len(config.Authentication.UserInfoUrl) == 0 {
+		// There must be a field with "email" in this url.
+		config.Authentication.UserInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo"
+	}
 
 	return *config
 }
@@ -361,7 +385,7 @@ func main() {
 				),
 			)
 
-			options := OptionsFromQuery(queryValues)
+			options := OptionsFromQuery(config, queryValues)
 
 			url := config.OauthConfig.AuthCodeURL(randomToken, options...)
 			fmt.Fprintln(w, HtmlRedirect(url))
@@ -506,7 +530,7 @@ func main() {
 				http.SetCookie(w, MakeCookie("next", "", -101))
 			}
 
-			options := OptionsFromQuery(queryValues)
+			options := OptionsFromQuery(config, queryValues)
 
 			fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken, options...)))
 		})
@@ -517,21 +541,21 @@ func main() {
 
 		router.NotFound = proxy
 
-		go func() {
-			if config.Host.IsSecure == true {
+		go func(c ServerConfigItem, r *httprouter.Router) {
+			if c.Host.IsSecure == true {
 				log.Fatal(http.ListenAndServeTLS(
-					fmt.Sprintf("%s:%d", config.Host.Bind, config.Host.Port),
-					config.Host.SSLCertificatePath,
-					config.Host.SSLCertificateKeyPath,
-					handlers.LoggingHandler(os.Stdout, router)),
+					fmt.Sprintf("%s:%d", c.Host.Bind, c.Host.Port),
+					c.Host.SSLCertificatePath,
+					c.Host.SSLCertificateKeyPath,
+					handlers.LoggingHandler(os.Stdout, r)),
 				)
 			} else {
 				log.Fatal(http.ListenAndServe(
-					fmt.Sprintf("%s:%d", config.Host.Bind, config.Host.Port),
-					handlers.LoggingHandler(os.Stdout, router)),
+					fmt.Sprintf("%s:%d", c.Host.Bind, c.Host.Port),
+					handlers.LoggingHandler(os.Stdout, r)),
 				)
 			}
-		}()
+		}(config, router)
 	}
 
 	<-done

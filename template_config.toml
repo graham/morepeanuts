@@ -68,3 +68,32 @@
         allow_all = true
         allow_list = [ "your_email@gmail.com" ]
         allow_args = [ ["permission_name", "myservice"] ]
+
+
+
+[server]
+  secure = false 
+  bind = "127.0.0.1" # what ip should the server bind to.
+  port = 9090        # what port
+
+  # fully qualified domain name, this is the domain the user
+  # will be redirected to after authenticating with google.
+  fqdn = "http://127.0.0.1:9090"
+
+  ssl_certificate = "/etc/ssl/server.pem"
+  ssl_certificate_key = "/etc/ssl/server.pem"
+
+[[host]]
+    domain = "127.0.0.1:9090"
+    dial = "http://127.0.0.1:3000"
+
+    [host.authentication]
+    cookie_duration_days = 30
+
+    client_id = ""
+    client_secret = ""
+    init_scopes = [ "https://www.googleapis.com/auth/userinfo.email" ]
+
+    [host.authorization]
+    require_auth = false
+    allow_all = true

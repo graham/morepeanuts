@@ -32,22 +32,21 @@ type User struct {
 }
 
 type ServerConfigItem struct {
-	Type string `toml:"type"`
+	Type                  string `toml:"type"`
+	IsSecure              bool   `toml:"secure"`
+	Bind                  string `toml:"bind"`
+	Port                  int    `toml:"port"`
+	SSLCertificatePath    string `toml:"ssl_certificate"`
+	SSLCertificateKeyPath string `toml:"ssl_certificate_key"`
+	CookiePassthrough     bool   `toml:"cookie_passthrough"`
+	CookieEncryptionKey   string `toml:"cookie_encryption_key"`
 
-	Host struct {
-		IsSecure              bool   `toml:"secure"`
-		Bind                  string `toml:"bind"`
-		Port                  int    `toml:"port"`
-		FQDN                  string `toml:"fqdn"`
-		SSLCertificatePath    string `toml:"ssl_certificate"`
-		SSLCertificateKeyPath string `toml:"ssl_certificate_key"`
-		CookiePassthrough     bool   `toml:"cookie_passthrough"`
-		CookieEncryptionKey   string `toml:"cookie_encryption_key"`
-	} `toml:"host"`
+	HostConfigItems []HostConfigItem `toml:"host"`
+}
 
-	Target struct {
-		Url string `toml:"url"`
-	} `toml:"target"`
+type HostConfigItem struct {
+	Domain string `toml:"domain"`
+	Dial   string `toml:"dial"`
 
 	Authentication struct {
 		ClientID           string     `toml:"client_id"`
@@ -331,34 +330,7 @@ func EnsureSaneDefaults(config ServerConfigItem) ServerConfigItem {
 	return config
 }
 
-func main() {
-	done := make(chan bool, 1)
-
-	b, err := ioutil.ReadFile("config.toml")
-	if err != nil {
-		panic(err)
-	}
-
-	var config struct {
-		Servers []ServerConfigItem `toml:"server"`
-	}
-
-	_, err = toml.Decode(string(b), &config)
-
-	if err != nil {
-		panic(err)
-	}
-
-	for _, config := range config.Servers {
-		config = EnsureSaneDefaults(config)
-		setupServer(config)
-	}
-
-	<-done
-}
-
-func setupServer(config ServerConfigItem) {
-
+func BuildRouter(config ServerConfigItem) {
 	router := httprouter.New()
 
 	target, _ := url.Parse(config.Target.Url)
@@ -566,5 +538,26 @@ func setupServer(config ServerConfigItem) {
 			)
 		}
 	}(config, router)
+}
+
+func main() {
+	done := make(chan bool, 1)
+
+	b, err := ioutil.ReadFile("config.toml")
+	if err != nil {
+		panic(err)
+	}
+
+	var config struct {
+		Servers []ServerConfigItem `toml:"server"`
+	}
+
+	_, err = toml.Decode(string(b), &config)
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(config)
 
 }

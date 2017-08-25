@@ -177,7 +177,7 @@ func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		if mrp.HostItem.Authorization.RequireAuth == true {
-			fmt.Fprintf(w, "/_/login?next=%s", r.RequestURI)
+			fmt.Fprintf(w, HtmlRedirect("/_/login?next=%s"), r.RequestURI)
 			return
 		} else {
 			r.Header.Set("X-Suez-Identity", "")

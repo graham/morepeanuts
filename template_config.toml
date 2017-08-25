@@ -1,14 +1,16 @@
 [server]
-  secure = false 
+  secure = false
   bind = "127.0.0.1" # what ip should the server bind to.
-  port = 9090        # what port
+  port = 9090       # what port
 
   ssl_certificate = "cert/server.csr"
   ssl_certificate_key = "cert/server.key"
 
 [[host]]
-    domains = [ "127.0.0.1:9090" ]
+    # Google Example
+    domain = "calendar.example.com"
     dial = "http://127.0.0.1:3000"
+
     cookie_passthrough = true
     cookie_encryption_key = "aaaaaaaaaaaaaaaa"
 
@@ -18,34 +20,46 @@
 
     client_id = ""
     client_secret = ""
-    init_scopes = [ "https://www.googleapis.com/auth/userinfo.email" ]
-    endpoint = [
-        "https://accounts.google.com/o/oauth2/auth",
-        "https://accounts.google.com/o/oauth2/token",
-    ]
-    user_info_url = "https://www.googleapis.com/oauth2/v3/userinfo"
-    add_values = []       
-    user_info_method_post = false
-   
-        # Dropbox
-        #
-        # init_scopes = [ " " ]
-        # endpoint = [
-        #     "https://www.dropbox.com/oauth2/authorize",
-        #     "https://www.dropbox.com/oauth2/token",
-        # ]
-        # # i don't know why dropbox uses a different kwarg than google.
-        # add_values = [
-        #   [ "redirect_uri", "http://127.0.0.1:9090/_/auth"],
-        # ]       
-        # user_info_url = "https://api.dropboxapi.com/2/users/get_current_account"
-        # user_info_post = true
 
     [host.authorization]
     cookie_name = "suez_identity_key"
-    require_auth = false
+    require_auth = true
 
-    allow_all = true
+    allow_all = false
     allow_list = [ "your_email@gmail.com" ]
     allow_args = [ ["permission_name", "myservice"] ]
-    
+
+[[host]]
+    # Dropbox Example
+    domain = "dropbox.example.com"
+    dial = "http://127.0.0.1:3001"
+
+    cookie_passthrough = true
+    cookie_encryption_key = "aaaaaaaaaaaaaaaa"
+
+    [host.authentication]
+    cookie_name = "suez_authentication_key"
+    cookie_duration_days = 30
+
+    client_id = ""
+    client_secret = ""
+
+    init_scopes = [ "" ]
+
+    endpoint = [
+       "https://www.dropbox.com/oauth2/authorize",
+       "https://www.dropbox.com/oauth2/token",
+    ]
+
+    user_info_url = "https://api.dropboxapi.com/2/users/get_current_account"
+    user_info_method_post = true
+
+    [host.authorization]
+    require_auth = false
+    allow_all = true
+    allow_list = []
+
+[[host]]
+    domain = "*"
+    [host.static]
+    directory = "static/"

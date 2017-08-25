@@ -101,6 +101,7 @@ type ServerConfigItem struct {
 	SSLCertificateKeyPath string `toml:"ssl_certificate_key"`
 
 	DomainToHostMap map[string]HostConfigItem
+	NotFound        *HostConfigItem
 }
 
 func (sci *ServerConfigItem) SaneDefaults() {
@@ -140,8 +141,13 @@ func (sci ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var found bool
 
 	if hostItem, found = sci.DomainToHostMap[r.Host]; found == false {
-		fmt.Fprintf(w, "Wasn't able to find: %s", r.RequestURI)
-		return
+		if sci.NotFound == nil {
+			fmt.Fprintf(w, "Wasn't able to find: %s", r.RequestURI)
+			return
+		} else {
+			sci.NotFound.Router.ServeHTTP(w, r)
+			return
+		}
 	}
 
 	hostItem.Router.ServeHTTP(w, r)
@@ -156,6 +162,8 @@ type HostConfigItem struct {
 	Dial                string `toml:"dial"`
 	CookiePassthrough   bool   `toml:"cookie_passthrough"`
 	CookieEncryptionKey string `toml:"cookie_encryption_key"`
+
+	AutoRedirectInsecure bool `toml:"auto_redirect_insecure"`
 
 	FQDN string
 
@@ -184,12 +192,20 @@ type HostConfigItem struct {
 		CookieName  string     `toml:"cookie_name"`
 	} `toml:"authorization"`
 
+	Static struct {
+		Directory string `toml:"directory"`
+	}
+
 	OauthConfig *oauth2.Config
 	Router      http.Handler
 	Proxy       *httputil.ReverseProxy
 }
 
 func (hci *HostConfigItem) SaneDefaults() {
+	if len(hci.Static.Directory) > 0 {
+		return
+	}
+
 	if len(hci.Domain) == 0 {
 		hci.Domain = "127.0.0.1"
 	}
@@ -239,6 +255,11 @@ func (hci *HostConfigItem) SaneDefaults() {
 func BuildRouter(sci ServerConfigItem, hci HostConfigItem, FQDN string) *httprouter.Router {
 	router := httprouter.New()
 
+	if len(hci.Static.Directory) > 0 {
+		router.ServeFiles("/*filepath", http.Dir(hci.Static.Directory))
+		return router
+	}
+
 	identUrl := hci.Authentication.UserInfoUrl
 	identPost := hci.Authentication.UserInfoPost
 
@@ -277,6 +298,9 @@ func BuildRouter(sci ServerConfigItem, hci HostConfigItem, FQDN string) *httprou
 		)
 
 		options := OptionsFromQuery(hci, queryValues)
+		if len(FQDN) == 0 {
+			OauthConfig.RedirectURL = fmt.Sprintf("http://%s/_/auth", r.Host)
+		}
 		url := OauthConfig.AuthCodeURL(randomToken, options...)
 		fmt.Fprintln(w, HtmlRedirect(url))
 	})
@@ -424,6 +448,9 @@ func BuildRouter(sci ServerConfigItem, hci HostConfigItem, FQDN string) *httprou
 
 		options := OptionsFromQuery(hci, queryValues)
 
+		if len(FQDN) == 0 {
+			OauthConfig.RedirectURL = fmt.Sprintf("http://%s/_/auth", r.Host)
+		}
 		fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken, options...)))
 	})
 
@@ -595,7 +622,6 @@ func main() {
 
 	for _, hci := range config.HostConfigItems {
 		hci.SaneDefaults()
-
 		var fullDomain string
 
 		if config.Server.Port == 80 || config.Server.Port == 443 {
@@ -604,11 +630,14 @@ func main() {
 			fullDomain = fmt.Sprintf("%s:%d", hci.Domain, config.Server.Port)
 		}
 
-		FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
-
-		hci.Router = BuildRouter(config.Server, hci, FQDN)
-
-		config.Server.DomainToHostMap[fullDomain] = hci
+		if hci.Domain == "*" {
+			config.Server.NotFound = &hci
+			config.Server.NotFound.Router = BuildRouter(config.Server, hci, "")
+		} else {
+			FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
+			hci.Router = BuildRouter(config.Server, hci, FQDN)
+			config.Server.DomainToHostMap[fullDomain] = hci
+		}
 	}
 
 	go func() {

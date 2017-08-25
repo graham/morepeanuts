@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -16,7 +15,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -32,34 +30,82 @@ type User struct {
 }
 
 type ServerConfigItem struct {
-	Type string `toml:"type"`
+	IsSecure              bool   `toml:"secure"`
+	Bind                  string `toml:"bind"`
+	Port                  int    `toml:"port"`
+	SSLCertificatePath    string `toml:"ssl_certificate"`
+	SSLCertificateKeyPath string `toml:"ssl_certificate_key"`
 
-	Host struct {
-		IsSecure              bool   `toml:"secure"`
-		Bind                  string `toml:"bind"`
-		Port                  int    `toml:"port"`
-		FQDN                  string `toml:"fqdn"`
-		SSLCertificatePath    string `toml:"ssl_certificate"`
-		SSLCertificateKeyPath string `toml:"ssl_certificate_key"`
-		CookiePassthrough     bool   `toml:"cookie_passthrough"`
-		CookieEncryptionKey   string `toml:"cookie_encryption_key"`
-	} `toml:"host"`
+	DomainToHostMap map[string]HostConfigItem
+}
 
-	Target struct {
-		Url string `toml:"url"`
-	} `toml:"target"`
+func (sci *ServerConfigItem) SaneDefaults() {
+	if sci.Bind == "" {
+		sci.Bind = "127.0.0.1"
+	}
+
+	if sci.Port == 0 {
+		if sci.IsSecure {
+			sci.Port = 443
+		} else {
+			sci.Port = 80
+		}
+	}
+
+	sci.DomainToHostMap = make(map[string]HostConfigItem)
+}
+
+func (sci ServerConfigItem) Listen() {
+	if sci.IsSecure == true {
+		log.Fatal(http.ListenAndServeTLS(
+			fmt.Sprintf("%s:%d", sci.Bind, sci.Port),
+			sci.SSLCertificatePath,
+			sci.SSLCertificateKeyPath,
+			handlers.LoggingHandler(os.Stdout, sci)),
+		)
+	} else {
+		log.Fatal(http.ListenAndServe(
+			fmt.Sprintf("%s:%d", sci.Bind, sci.Port),
+			handlers.LoggingHandler(os.Stdout, sci)),
+		)
+	}
+}
+
+func (sci ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var hostItem HostConfigItem
+	var found bool
+
+	if hostItem, found = sci.DomainToHostMap[r.Host]; found == false {
+		fmt.Fprintf(w, "Wasn't able to find: %s", r.RequestURI)
+		return
+	}
+
+	hostItem.Router.ServeHTTP(w, r)
+}
+
+type HostConfigItem struct {
+	Domains             []string `toml:"domains"`
+	Dial                string   `toml:"dial"`
+	CookiePassthrough   bool     `toml:"cookie_passthrough"`
+	CookieEncryptionKey string   `toml:"cookie_encryption_key"`
+
+	FQDN string
 
 	Authentication struct {
-		ClientID           string     `toml:"client_id"`
-		ClientSecret       string     `toml:"client_secret"`
-		InitScopes         []string   `toml:"init_scopes"`
-		StrEndpoint        []string   `toml:"endpoint"`
-		AddValues          [][]string `toml:"add_values"`
-		UserInfoUrl        string     `toml:"user_info_url"`
-		UserInfoPost       bool       `toml:"user_info_post"`
-		CookieName         string     `toml:"cookie_name"`
-		CookieDurationDays int        `toml:"cookie_duration_days"`
-		Endpoint           oauth2.Endpoint
+		CookieName         string `toml:"cookie_name"`
+		CookieDurationDays int    `toml:"cookie_duration_days"`
+
+		ClientID     string `toml:"client_id"`
+		ClientSecret string `toml:"client_secret"`
+
+		InitScopes []string `toml:"init_scopes"`
+
+		AddValues    [][]string `toml:"add_values"`
+		UserInfoUrl  string     `toml:"user_info_url"`
+		UserInfoPost bool       `toml:"user_info_method_post"`
+
+		EndpointStr []string `toml:"endpoint"`
+		Endpoint    oauth2.Endpoint
 	} `toml:"authentication"`
 
 	Authorization struct {
@@ -71,65 +117,86 @@ type ServerConfigItem struct {
 	} `toml:"authorization"`
 
 	OauthConfig *oauth2.Config
+	Router      http.Handler
+	Proxy       *httputil.ReverseProxy
 }
 
-type MyTransport struct {
-	http.RoundTripper
-	Config ServerConfigItem
-}
-
-func (t *MyTransport) EmailHasAccess(email string) (bool, string) {
-	// if you have a custom email permission check, you should do it here.
-	if t.Config.Authorization.AllowAll == false {
-		var hit bool = false
-		for _, test_email := range t.Config.Authorization.AllowList {
-			if email == test_email {
-				hit = true
-			}
-		}
-		return hit, "User Not Allowed"
+func (hci *HostConfigItem) SaneDefaults() {
+	if len(hci.Domains) == 0 {
+		hci.Domains = []string{"127.0.0.1"}
 	}
-	return true, ""
+
+	if hci.Dial == "" {
+		panic("Must specify a 'dial' target under [host]")
+	}
+
+	if hci.Authentication.CookieName == "" {
+		hci.Authentication.CookieName = "suez_authentication_key"
+	}
+
+	if hci.Authentication.CookieDurationDays == 0 {
+		hci.Authentication.CookieDurationDays = 1
+	}
+
+	if hci.Authentication.ClientID == "" {
+		panic("[host.authentication] must contain a client_id")
+	}
+
+	if hci.Authentication.ClientSecret == "" {
+		panic("[host.authentication] must contain a client_secret")
+	}
+
+	if len(hci.Authentication.InitScopes) == 0 {
+		log.Println("No init scopes set, using default: [https://www.googleapis.com/auth/userinfo.email]")
+		hci.Authentication.InitScopes = []string{"https://www.googleapis.com/auth/userinfo.email"}
+	}
+
+	if len(hci.Authentication.EndpointStr) == 0 {
+		log.Printf("No explicit endpoints set, going with default: %s\n", google.Endpoint)
+		hci.Authentication.Endpoint = google.Endpoint
+	} else {
+		hci.Authentication.Endpoint = oauth2.Endpoint{
+			AuthURL:  hci.Authentication.EndpointStr[0],
+			TokenURL: hci.Authentication.EndpointStr[1],
+		}
+	}
+
+	if len(hci.Authentication.UserInfoUrl) == 0 {
+		log.Printf("Using default user info path https://www.googleapis.com/oauth2/v3/userinfo")
+		hci.Authentication.UserInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo"
+	}
 }
 
-func (t *MyTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
-	cookie, err := req.Cookie(t.Config.Authorization.CookieName)
+type SuezReverseProxy struct {
+	Proxy    *httputil.ReverseProxy
+	HostItem *HostConfigItem
+}
+
+func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(mrp.HostItem.Authorization.CookieName)
 
 	if err != nil {
-		if t.Config.Authorization.RequireAuth == true {
-			target := fmt.Sprintf("/_/login?next=%s", req.RequestURI)
-			resp := http.Response{
-				Body: ioutil.NopCloser(strings.NewReader(
-					HtmlRedirect(target),
-				)),
-			}
-			return &resp, nil
+		if mrp.HostItem.Authorization.RequireAuth == true {
+			fmt.Fprintf(w, "/_/login?next=%s", r.RequestURI)
+			return
 		} else {
-			req.Header.Set("X-Suez-Identity", "")
+			r.Header.Set("X-Suez-Identity", "")
 		}
 	} else {
-		email, _ := Decrypt(t.Config.Host.CookieEncryptionKey, cookie.Value)
-		req.Header.Set("X-Suez-Auth", email)
-
-		allowed, reason := t.EmailHasAccess(email)
-		if allowed == false {
-			resp := http.Response{
-				Body: ioutil.NopCloser(strings.NewReader(reason)),
-			}
-			return &resp, nil
-		}
+		email, _ := Decrypt(mrp.HostItem.CookieEncryptionKey, cookie.Value)
+		r.Header.Set("X-Suez-Auth", email)
 	}
 
-	cookies := req.Cookies()
+	cookies := r.Cookies()
 	remaining_cookies := make([]string, 0)
 
 	for _, i := range cookies {
-		if i.Name == t.Config.Authentication.CookieName ||
-			i.Name == t.Config.Authorization.CookieName {
-			if t.Config.Host.CookiePassthrough == false {
+		if i.Name == mrp.HostItem.Authentication.CookieName ||
+			i.Name == mrp.HostItem.Authorization.CookieName {
+			if mrp.HostItem.CookiePassthrough == false {
 				continue
 			} else {
-				newValue, _ := Decrypt(t.Config.Host.CookieEncryptionKey, i.Value)
+				newValue, _ := Decrypt(mrp.HostItem.CookieEncryptionKey, i.Value)
 				i.Value = base64.URLEncoding.EncodeToString([]byte(newValue))
 			}
 		}
@@ -139,30 +206,204 @@ func (t *MyTransport) RoundTrip(req *http.Request) (resp *http.Response, err err
 		)
 	}
 
-	req.Header.Set("Cookie", strings.Join(remaining_cookies, ";"))
+	r.Header.Set("Cookie", strings.Join(remaining_cookies, ";"))
 
-	resp, err = t.RoundTripper.RoundTrip(req)
-	if err != nil {
-		return nil, err
+	mrp.Proxy.ServeHTTP(w, r)
+}
+
+func (hci *HostConfigItem) BuildRouter(sci ServerConfigItem, FQDN string) {
+	router := httprouter.New()
+
+	target, _ := url.Parse(hci.Dial)
+	router.NotFound = SuezReverseProxy{
+		Proxy:    httputil.NewSingleHostReverseProxy(target),
+		HostItem: hci,
 	}
 
-	b, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	OauthConfig := &oauth2.Config{
+		ClientID:     hci.Authentication.ClientID,
+		ClientSecret: hci.Authentication.ClientSecret,
+		RedirectURL:  fmt.Sprintf("%s/_/auth", FQDN),
+		Scopes:       hci.Authentication.InitScopes,
+		Endpoint:     hci.Authentication.Endpoint,
 	}
 
-	err = resp.Body.Close()
-	if err != nil {
-		return nil, err
-	}
+	router.GET("/_/login", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		queryValues := r.URL.Query()
+		next := queryValues.Get("next")
 
-	body := ioutil.NopCloser(bytes.NewReader(b))
+		if len(next) > 0 {
+			http.SetCookie(w, MakeCookie("next", next, 1))
+		} else {
+			http.SetCookie(w, MakeCookie("next", "", -101))
+		}
 
-	resp.Body = body
-	resp.ContentLength = int64(len(b))
-	resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
+		randomToken := GenRandomString()
 
-	return resp, nil
+		http.SetCookie(w,
+			MakeCookie(
+				hci.Authentication.CookieName,
+				randomToken,
+				hci.Authentication.CookieDurationDays,
+			),
+		)
+
+		options := OptionsFromQuery(hci, queryValues)
+		url := OauthConfig.AuthCodeURL(randomToken, options...)
+		fmt.Fprintln(w, HtmlRedirect(url))
+	})
+
+	router.GET("/_/logout", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		queryValues := r.URL.Query()
+		next := queryValues.Get("next")
+
+		http.SetCookie(w, MakeCookie(hci.Authentication.CookieName, "", -101))
+		http.SetCookie(w, MakeCookie(hci.Authorization.CookieName, "", -101))
+
+		if len(next) == 0 {
+			fmt.Fprintf(w, "<html><body>You have been logged out.</body></html>")
+		} else {
+			fmt.Fprintf(w, HtmlRedirect(next))
+			http.SetCookie(w, MakeCookie("next", "/", -100))
+		}
+	})
+
+	router.GET("/_/auth", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		cookie, err := r.Cookie(hci.Authentication.CookieName)
+
+		if err != nil {
+			log.Printf("Cookie Error: %s\n", err)
+			http.SetCookie(w, MakeCookie(hci.Authentication.CookieName, "", -101))
+			http.SetCookie(w, MakeCookie(hci.Authorization.CookieName, "", -101))
+			fmt.Fprintln(w, HtmlRedirect("/_/login"))
+			return
+		}
+
+		queryValues := r.URL.Query()
+		urlState := queryValues.Get("state")
+
+		if urlState != cookie.Value {
+			log.Printf("values didnt match: %s %s\n", urlState, cookie.Value)
+			http.SetCookie(w, MakeCookie(hci.Authentication.CookieName, "", -101))
+			http.SetCookie(w, MakeCookie(hci.Authorization.CookieName, "", -101))
+			fmt.Fprintf(w, "<html><body>An error occurred.</body></html>")
+			return
+		}
+
+		code := queryValues.Get("code")
+		tok, terr := OauthConfig.Exchange(oauth2.NoContext, code)
+
+		if terr != nil {
+			panic(terr)
+		}
+
+		b, _ := json.Marshal(tok)
+
+		enc_value, _ := Encrypt(hci.CookieEncryptionKey, string(b))
+		http.SetCookie(w, MakeCookie(
+			hci.Authentication.CookieName,
+			enc_value,
+			hci.Authentication.CookieDurationDays,
+		))
+
+		client := OauthConfig.Client(oauth2.NoContext, tok)
+		email, email_err := getIdentityWithClient(hci, client)
+
+		if email_err != nil {
+			http.SetCookie(w, MakeCookie(hci.Authentication.CookieName, "", -101))
+			http.SetCookie(w, MakeCookie(hci.Authorization.CookieName, "", -101))
+			fmt.Fprintf(w, "<html><body>Invalid Token %s</Body></html>", email_err)
+			return
+		}
+
+		ident_enc_value, _ := Encrypt(
+			hci.CookieEncryptionKey,
+			email,
+		)
+		http.SetCookie(w, MakeCookie(
+			hci.Authorization.CookieName,
+			ident_enc_value,
+			hci.Authentication.CookieDurationDays,
+		))
+
+		cookie, err = r.Cookie("next")
+		if err != nil {
+			fmt.Fprintf(w, HtmlRedirect("/_/test"))
+			http.SetCookie(w, MakeCookie("next", "", -100))
+		} else {
+			url := cookie.Value
+			fmt.Fprintf(w, HtmlRedirect(url))
+			http.SetCookie(w, MakeCookie("next", "", -100))
+		}
+	})
+
+	router.GET("/_/test", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		cookie, err := r.Cookie(hci.Authentication.CookieName)
+		var tok oauth2.Token
+
+		if err != nil {
+			fmt.Fprintf(w, "<html><body>Not logged in</body></html>")
+			return
+		}
+
+		decrypted_code, _ := Decrypt(hci.CookieEncryptionKey, cookie.Value)
+
+		json.Unmarshal([]byte(decrypted_code), &tok)
+
+		client := OauthConfig.Client(oauth2.NoContext, &tok)
+		email, email_err := getIdentityWithClient(hci, client)
+
+		if email_err != nil {
+			log.Println(email_err)
+			fmt.Fprintf(w, "<html><body>Invalid Token</Body></html>")
+			return
+		}
+
+		fmt.Fprintf(w, "<html><body>%s</body></html>", email)
+	})
+
+	router.GET("/_/landing", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		fmt.Fprintf(w, "<html><body><a href='/_/login'>Login</a></body></html>")
+	})
+
+	router.GET("/_/add_scopes", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		queryValues := r.URL.Query()
+
+		scopes := strings.Split(queryValues.Get("scopes"), ",")
+		scopes = append(scopes, hci.Authentication.InitScopes...)
+
+		TempOauthConfig := &oauth2.Config{
+			ClientID:     hci.Authentication.ClientID,
+			ClientSecret: hci.Authentication.ClientSecret,
+			RedirectURL:  fmt.Sprintf("%s/_/auth", FQDN),
+			Scopes:       scopes,
+			Endpoint:     hci.Authentication.Endpoint,
+		}
+
+		randomToken := GenRandomString()
+		http.SetCookie(w, MakeCookie(
+			hci.Authentication.CookieName,
+			randomToken,
+			hci.Authentication.CookieDurationDays,
+		))
+
+		next := queryValues.Get("next")
+		if len(next) > 0 {
+			http.SetCookie(w, MakeCookie("next", next, 1))
+		} else {
+			http.SetCookie(w, MakeCookie("next", "", -101))
+		}
+
+		options := OptionsFromQuery(hci, queryValues)
+
+		fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken, options...)))
+	})
+
+	router.GET("/_/hello/:name", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		fmt.Fprintf(w, "hello, %s!\n", ps.ByName("name"))
+	})
+
+	hci.Router = router
 }
 
 func Encrypt(key string, text string) (string, error) {
@@ -209,6 +450,7 @@ func Decrypt(key, b64text string) (string, error) {
 }
 
 func MakeCookie(key string, value string, days int) *http.Cookie {
+	// log.Printf("Making cookie %s with value %s for %d days\n", key, value, days)
 	expiration := time.Now().AddDate(0, 0, days)
 
 	return &http.Cookie{
@@ -225,7 +467,7 @@ func GenRandomString() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-func OptionsFromQuery(config ServerConfigItem, values url.Values) []oauth2.AuthCodeOption {
+func OptionsFromQuery(hostItem *HostConfigItem, values url.Values) []oauth2.AuthCodeOption {
 	options := []oauth2.AuthCodeOption{}
 
 	if values.Get("force") == "1" {
@@ -238,7 +480,7 @@ func OptionsFromQuery(config ServerConfigItem, values url.Values) []oauth2.AuthC
 
 	// Since oauth2.AccessTypeOnline is default, we'll just leave.
 
-	for _, row := range config.Authentication.AddValues {
+	for _, row := range hostItem.Authentication.AddValues {
 		options = append(options, oauth2.SetAuthURLParam(row[0], row[1]))
 	}
 
@@ -249,15 +491,14 @@ func HtmlRedirect(url string) string {
 	return fmt.Sprintf("<html><meta http-equiv=\"refresh\" content=\"0;url='%s'\" /></html>", url)
 }
 
-func getIdentityWithClient(config ServerConfigItem, client *http.Client) (string, error) {
-	// This part is very google dependent.
+func getIdentityWithClient(hostItem *HostConfigItem, client *http.Client) (string, error) {
 	var email *http.Response
 	var err error
 
-	if config.Authentication.UserInfoPost {
-		email, err = client.Post(config.Authentication.UserInfoUrl, "", nil)
+	if hostItem.Authentication.UserInfoPost {
+		email, err = client.Post(hostItem.Authentication.UserInfoUrl, "", nil)
 	} else {
-		email, err = client.Get(config.Authentication.UserInfoUrl)
+		email, err = client.Get(hostItem.Authentication.UserInfoUrl)
 	}
 
 	if err != nil {
@@ -278,59 +519,6 @@ func getIdentityWithClient(config ServerConfigItem, client *http.Client) (string
 	return user.Email, nil
 }
 
-func EnsureSaneDefaults(config ServerConfigItem) ServerConfigItem {
-	if config.Host.Bind == "" {
-		config.Host.Bind = "127.0.0.1"
-	}
-
-	if config.Authentication.CookieDurationDays < 1 {
-		config.Authentication.CookieDurationDays = 7
-	}
-
-	if config.Authentication.CookieName == "" {
-		config.Authentication.CookieName = "suez_authentication_key"
-	}
-
-	if config.Authorization.CookieName == "" {
-		config.Authorization.CookieName = "suez_identity_key"
-	}
-
-	if config.Authentication.CookieName == config.Authorization.CookieName {
-		panic("Authentication Cookie and Authorization Cookie can't be the same.")
-	}
-
-	if config.Authentication.ClientID == "" {
-		panic("No OAuth ClientID set.")
-	}
-
-	if config.Authentication.ClientSecret == "" {
-		panic("No OAuth ClientSecret set.")
-	}
-
-	if len(config.Authentication.InitScopes) == 0 {
-		log.Println("No scope set, using default of https://www.googleapis.com/auth/userinfo.email")
-		config.Authentication.InitScopes = []string{
-			"https://www.googleapis.com/auth/userinfo.email",
-		}
-	}
-
-	if len(config.Authentication.StrEndpoint) > 0 {
-		config.Authentication.Endpoint = oauth2.Endpoint{
-			AuthURL:  config.Authentication.StrEndpoint[0],
-			TokenURL: config.Authentication.StrEndpoint[1],
-		}
-	} else {
-		config.Authentication.Endpoint = google.Endpoint
-	}
-
-	if len(config.Authentication.UserInfoUrl) == 0 {
-		// There must be a field with "email" in this url.
-		config.Authentication.UserInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo"
-	}
-
-	return config
-}
-
 func main() {
 	done := make(chan bool, 1)
 
@@ -340,7 +528,8 @@ func main() {
 	}
 
 	var config struct {
-		Servers []ServerConfigItem `toml:"server"`
+		Server          ServerConfigItem `toml:"server"`
+		HostConfigItems []HostConfigItem `toml:"host"`
 	}
 
 	_, err = toml.Decode(string(b), &config)
@@ -349,222 +538,34 @@ func main() {
 		panic(err)
 	}
 
-	for _, config := range config.Servers {
-		config = EnsureSaneDefaults(config)
-		setupServer(config)
+	var protocol string
+	if config.Server.IsSecure {
+		protocol = "https"
+	} else {
+		protocol = "http"
 	}
+
+	config.Server.SaneDefaults()
+
+	for _, hci := range config.HostConfigItems {
+		hci.SaneDefaults()
+
+		for _, domain := range hci.Domains {
+			var fullDomain string
+
+			if config.Server.Port == 80 || config.Server.Port == 443 {
+				fullDomain = domain
+			} else {
+				fullDomain = fmt.Sprintf("%s:%d", domain, config.Server.Port)
+			}
+
+			FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
+			hci.BuildRouter(config.Server, FQDN)
+			config.Server.DomainToHostMap[fullDomain] = hci
+		}
+	}
+
+	config.Server.Listen()
 
 	<-done
-}
-
-func setupServer(config ServerConfigItem) {
-
-	router := httprouter.New()
-
-	target, _ := url.Parse(config.Target.Url)
-	tp := MyTransport{http.DefaultTransport, config}
-
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = &tp
-
-	config.OauthConfig = &oauth2.Config{
-		ClientID:     config.Authentication.ClientID,
-		ClientSecret: config.Authentication.ClientSecret,
-		RedirectURL:  fmt.Sprintf("%s/_/auth", config.Host.FQDN),
-		Scopes:       config.Authentication.InitScopes,
-		Endpoint:     config.Authentication.Endpoint,
-	}
-
-	router.GET("/_/login", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		queryValues := r.URL.Query()
-		next := queryValues.Get("next")
-
-		if len(next) > 0 {
-			http.SetCookie(w, MakeCookie("next", next, 1))
-		} else {
-			http.SetCookie(w, MakeCookie("next", "", -101))
-		}
-
-		randomToken := GenRandomString()
-
-		http.SetCookie(w,
-			MakeCookie(
-				config.Authentication.CookieName,
-				randomToken,
-				config.Authentication.CookieDurationDays,
-			),
-		)
-
-		options := OptionsFromQuery(config, queryValues)
-
-		url := config.OauthConfig.AuthCodeURL(randomToken, options...)
-		fmt.Fprintln(w, HtmlRedirect(url))
-	})
-
-	router.GET("/_/logout", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		queryValues := r.URL.Query()
-		next := queryValues.Get("next")
-
-		http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
-		http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
-
-		if len(next) == 0 {
-			fmt.Fprintf(w, "<html><body>You have been logged out.</body></html>")
-		} else {
-			fmt.Fprintf(w, HtmlRedirect(next))
-			http.SetCookie(w, MakeCookie("next", "/", -100))
-		}
-	})
-
-	router.GET("/_/auth", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		cookie, err := r.Cookie(config.Authentication.CookieName)
-
-		if err != nil {
-			http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
-			http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
-			fmt.Fprintln(w, HtmlRedirect("/_/login"))
-			return
-		}
-
-		queryValues := r.URL.Query()
-		urlState := queryValues.Get("state")
-
-		if urlState != cookie.Value {
-			http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
-			http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
-			//http.SetCookie(w, MakeCookie("next", "", -101))
-			fmt.Fprintf(w, "<html><body>An error occurred.</body></html>")
-			return
-		}
-
-		code := queryValues.Get("code")
-		tok, terr := config.OauthConfig.Exchange(oauth2.NoContext, code)
-
-		if terr != nil {
-			panic(terr)
-		}
-
-		b, _ := json.Marshal(tok)
-
-		enc_value, _ := Encrypt(config.Host.CookieEncryptionKey, string(b))
-		http.SetCookie(w, MakeCookie(
-			config.Authentication.CookieName,
-			enc_value,
-			config.Authentication.CookieDurationDays,
-		))
-
-		client := config.OauthConfig.Client(oauth2.NoContext, tok)
-		email, email_err := getIdentityWithClient(config, client)
-
-		if email_err != nil {
-			http.SetCookie(w, MakeCookie(config.Authentication.CookieName, "", -101))
-			http.SetCookie(w, MakeCookie(config.Authorization.CookieName, "", -101))
-			fmt.Fprintf(w, "<html><body>Invalid Token %s</Body></html>", email_err)
-			return
-		}
-
-		ident_enc_value, _ := Encrypt(
-			config.Host.CookieEncryptionKey,
-			email,
-		)
-		http.SetCookie(w, MakeCookie(
-			config.Authorization.CookieName,
-			ident_enc_value,
-			config.Authentication.CookieDurationDays,
-		))
-
-		cookie, err = r.Cookie("next")
-		if err != nil {
-			fmt.Fprintf(w, HtmlRedirect("/_/test"))
-			http.SetCookie(w, MakeCookie("next", "", -100))
-		} else {
-			url := cookie.Value
-			fmt.Fprintf(w, HtmlRedirect(url))
-			http.SetCookie(w, MakeCookie("next", "", -100))
-		}
-	})
-
-	router.GET("/_/test", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		cookie, err := r.Cookie(config.Authentication.CookieName)
-		var tok oauth2.Token
-
-		if err != nil {
-			fmt.Fprintf(w, "<html><body>Not logged in</body></html>")
-			return
-		}
-
-		decrypted_code, _ := Decrypt(config.Host.CookieEncryptionKey, cookie.Value)
-
-		json.Unmarshal([]byte(decrypted_code), &tok)
-		client := config.OauthConfig.Client(oauth2.NoContext, &tok)
-		email, email_err := getIdentityWithClient(config, client)
-
-		if email_err != nil {
-			log.Println(email_err)
-			fmt.Fprintf(w, "<html><body>Invalid Token</Body></html>")
-			return
-		}
-
-		fmt.Fprintf(w, "<html><body>%s</body></html>", email)
-	})
-
-	router.GET("/_/landing", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		fmt.Fprintf(w, "<html><body><a href='/_/login'>Login</a></body></html>")
-	})
-
-	router.GET("/_/add_scopes", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		queryValues := r.URL.Query()
-
-		scopes := strings.Split(queryValues.Get("scopes"), ",")
-		scopes = append(scopes, config.Authentication.InitScopes...)
-
-		TempOauthConfig := &oauth2.Config{
-			ClientID:     config.Authentication.ClientID,
-			ClientSecret: config.Authentication.ClientSecret,
-			RedirectURL:  fmt.Sprintf("%s/_/auth", config.Host.FQDN),
-			Scopes:       scopes,
-			Endpoint:     config.Authentication.Endpoint,
-		}
-
-		randomToken := GenRandomString()
-		http.SetCookie(w, MakeCookie(
-			config.Authentication.CookieName,
-			randomToken,
-			config.Authentication.CookieDurationDays,
-		))
-
-		next := queryValues.Get("next")
-		if len(next) > 0 {
-			http.SetCookie(w, MakeCookie("next", next, 1))
-		} else {
-			http.SetCookie(w, MakeCookie("next", "", -101))
-		}
-
-		options := OptionsFromQuery(config, queryValues)
-
-		fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken, options...)))
-	})
-
-	router.GET("/_/hello/:name", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		fmt.Fprintf(w, "hello, %s!\n", ps.ByName("name"))
-	})
-
-	router.NotFound = proxy
-
-	go func(c ServerConfigItem, r *httprouter.Router) {
-		if c.Host.IsSecure == true {
-			log.Fatal(http.ListenAndServeTLS(
-				fmt.Sprintf("%s:%d", c.Host.Bind, c.Host.Port),
-				c.Host.SSLCertificatePath,
-				c.Host.SSLCertificateKeyPath,
-				handlers.LoggingHandler(os.Stdout, r)),
-			)
-		} else {
-			log.Fatal(http.ListenAndServe(
-				fmt.Sprintf("%s:%d", c.Host.Bind, c.Host.Port),
-				handlers.LoggingHandler(os.Stdout, r)),
-			)
-		}
-	}(config, router)
-
 }

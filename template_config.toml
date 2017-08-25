@@ -1,47 +1,32 @@
-# This is the Suez config
+[server]
+  secure = false 
+  bind = "127.0.0.1" # what ip should the server bind to.
+  port = 9090        # what port
 
-[[server]]
-    # type = "direct" # default currently the only option.
+  ssl_certificate = "cert/server.csr"
+  ssl_certificate_key = "cert/server.key"
 
-    [server.host]
-        secure = false 
-        bind = "127.0.0.1" # what ip should the server bind to.
-        port = 9090        # what port
+[[host]]
+    domains = [ "127.0.0.1:9090" ]
+    dial = "http://127.0.0.1:3000"
+    cookie_passthrough = true
+    cookie_encryption_key = "aaaaaaaaaaaaaaaa"
 
-        # fully qualified domain name, this is the domain the user
-        # will be redirected to after authenticating with google.
-        fqdn = "http://127.0.0.1:9090"
+    [host.authentication]
+    cookie_name = "suez_authentication_key"
+    cookie_duration_days = 30
 
-        ssl_certificate = "/etc/ssl/server.pem"
-        ssl_certificate_key = "/etc/ssl/server.pem"
-
-        # If false, both the oauth and identity cookie will be removed
-        # before the connection is forwarded to the backend.
-        # If true, the cookies are decoded and passed to the backend as
-        # base64 encoded json strings.
-        cookie_passthrough = true
-        cookie_encryption_key = "aaaaaaaaaaaaaaaa"
-    
-    [server.target]
-        # backend to forward your connections to
-        url = "http://127.0.0.1:3000"
-
-    [server.authentication]
-        # cookie used for tracking authentication.
-        cookie_name = "suez_authentication_key"
-        cookie_duration_days = 30
-
-        # oauth creds. Scopes are required on login, additional scopes can be requested.
-        # Google
-        client_id = ""
-        client_secret = ""
-        init_scopes = [ "https://www.googleapis.com/auth/userinfo.email" ]
-        endpoint = [
-            "https://accounts.google.com/o/oauth2/auth",
-            "https://accounts.google.com/o/oauth2/token",
-        ]
-        user_info_url = "https://www.googleapis.com/oauth2/v3/userinfo"
-
+    client_id = ""
+    client_secret = ""
+    init_scopes = [ "https://www.googleapis.com/auth/userinfo.email" ]
+    endpoint = [
+        "https://accounts.google.com/o/oauth2/auth",
+        "https://accounts.google.com/o/oauth2/token",
+    ]
+    user_info_url = "https://www.googleapis.com/oauth2/v3/userinfo"
+    add_values = []       
+    user_info_method_post = false
+   
         # Dropbox
         #
         # init_scopes = [ " " ]
@@ -56,15 +41,11 @@
         # user_info_url = "https://api.dropboxapi.com/2/users/get_current_account"
         # user_info_post = true
 
-    [server.authorization]
-        # name of cookie used for ident
-        cookie_name = "suez_identity_key"
+    [host.authorization]
+    cookie_name = "suez_identity_key"
+    require_auth = false
 
-        # If required_auth is true, no pages are available without a valid auth token.
-        require_auth = false
-
-        # If true any valid oauth2 credentials are passed, if false, only accounts
-        # in the allow list are allowed.
-        allow_all = true
-        allow_list = [ "your_email@gmail.com" ]
-        allow_args = [ ["permission_name", "myservice"] ]
+    allow_all = true
+    allow_list = [ "your_email@gmail.com" ]
+    allow_args = [ ["permission_name", "myservice"] ]
+    

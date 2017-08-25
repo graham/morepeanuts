@@ -15,19 +15,83 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 
 	"github.com/BurntSushi/toml"
 	"github.com/gorilla/handlers"
 	"github.com/julienschmidt/httprouter"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
-type User struct {
-	Email string `json:"email"`
+// Reverse Proxy
+
+type SuezReverseProxy struct {
+	Proxy    *httputil.ReverseProxy
+	HostItem *HostConfigItem
 }
+
+func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(mrp.HostItem.Authorization.CookieName)
+
+	if err != nil {
+		if mrp.HostItem.Authorization.RequireAuth == true {
+			fmt.Fprintf(w, HtmlRedirect("/_/login?next=%s"), r.RequestURI)
+			return
+		} else {
+			r.Header.Set("X-Suez-Identity", "")
+		}
+	} else {
+		email, _ := Decrypt(mrp.HostItem.CookieEncryptionKey, cookie.Value)
+		if mrp.HostItem.Authorization.AllowAll {
+			r.Header.Set("X-Suez-Auth", email)
+		} else {
+			var hit bool = false
+			for _, testEmail := range mrp.HostItem.Authorization.AllowList {
+				if email == testEmail {
+					hit = true
+				}
+			}
+
+			if hit == true {
+				r.Header.Set("X-Suez-Auth", email)
+			} else {
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte("401 - Not authorized"))
+				return
+			}
+		}
+	}
+
+	cookies := r.Cookies()
+	remaining_cookies := make([]string, 0)
+
+	for _, i := range cookies {
+		if i.Name == mrp.HostItem.Authentication.CookieName ||
+			i.Name == mrp.HostItem.Authorization.CookieName {
+			if mrp.HostItem.CookiePassthrough == false {
+				continue
+			} else {
+				newValue, _ := Decrypt(mrp.HostItem.CookieEncryptionKey, i.Value)
+				i.Value = base64.URLEncoding.EncodeToString([]byte(newValue))
+			}
+		}
+		remaining_cookies = append(
+			remaining_cookies,
+			MakeCookie(i.Name, i.Value, 1).String(),
+		)
+	}
+
+	r.Header.Set("Cookie", strings.Join(remaining_cookies, ";"))
+	mrp.Proxy.ServeHTTP(w, r)
+}
+
+// End Reverse Proxy
+
+// Server Config Item
 
 type ServerConfigItem struct {
 	IsSecure              bool   `toml:"secure"`
@@ -82,6 +146,10 @@ func (sci ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	hostItem.Router.ServeHTTP(w, r)
 }
+
+// End Server Config Item
+
+// Host Config Item
 
 type HostConfigItem struct {
 	Domain              string `toml:"domain"`
@@ -168,67 +236,7 @@ func (hci *HostConfigItem) SaneDefaults() {
 	}
 }
 
-type SuezReverseProxy struct {
-	Proxy    *httputil.ReverseProxy
-	HostItem *HostConfigItem
-}
-
-func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(mrp.HostItem.Authorization.CookieName)
-
-	if err != nil {
-		if mrp.HostItem.Authorization.RequireAuth == true {
-			fmt.Fprintf(w, HtmlRedirect("/_/login?next=%s"), r.RequestURI)
-			return
-		} else {
-			r.Header.Set("X-Suez-Identity", "")
-		}
-	} else {
-		email, _ := Decrypt(mrp.HostItem.CookieEncryptionKey, cookie.Value)
-		if mrp.HostItem.Authorization.AllowAll {
-			r.Header.Set("X-Suez-Auth", email)
-		} else {
-			var hit bool = false
-			for _, testEmail := range mrp.HostItem.Authorization.AllowList {
-				if email == testEmail {
-					hit = true
-				}
-			}
-
-			if hit == true {
-				r.Header.Set("X-Suez-Auth", email)
-			} else {
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte("401 - Not authorized"))
-				return
-			}
-		}
-	}
-
-	cookies := r.Cookies()
-	remaining_cookies := make([]string, 0)
-
-	for _, i := range cookies {
-		if i.Name == mrp.HostItem.Authentication.CookieName ||
-			i.Name == mrp.HostItem.Authorization.CookieName {
-			if mrp.HostItem.CookiePassthrough == false {
-				continue
-			} else {
-				newValue, _ := Decrypt(mrp.HostItem.CookieEncryptionKey, i.Value)
-				i.Value = base64.URLEncoding.EncodeToString([]byte(newValue))
-			}
-		}
-		remaining_cookies = append(
-			remaining_cookies,
-			MakeCookie(i.Name, i.Value, 1).String(),
-		)
-	}
-
-	r.Header.Set("Cookie", strings.Join(remaining_cookies, ";"))
-	mrp.Proxy.ServeHTTP(w, r)
-}
-
-func (hci *HostConfigItem) BuildRouter(sci ServerConfigItem, FQDN string) {
+func BuildRouter(sci ServerConfigItem, hci HostConfigItem, FQDN string) *httprouter.Router {
 	router := httprouter.New()
 
 	identUrl := hci.Authentication.UserInfoUrl
@@ -237,7 +245,7 @@ func (hci *HostConfigItem) BuildRouter(sci ServerConfigItem, FQDN string) {
 	target, _ := url.Parse(hci.Dial)
 	router.NotFound = SuezReverseProxy{
 		Proxy:    httputil.NewSingleHostReverseProxy(target),
-		HostItem: hci,
+		HostItem: &hci,
 	}
 
 	OauthConfig := &oauth2.Config{
@@ -423,8 +431,12 @@ func (hci *HostConfigItem) BuildRouter(sci ServerConfigItem, FQDN string) {
 		fmt.Fprintf(w, "hello, %s!\n", ps.ByName("name"))
 	})
 
-	hci.Router = router
+	return router
 }
+
+// End Host Config Item
+
+// Util
 
 func Encrypt(key string, text string) (string, error) {
 	if len(key) == 0 {
@@ -487,7 +499,7 @@ func GenRandomString() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-func OptionsFromQuery(hostItem *HostConfigItem, values url.Values) []oauth2.AuthCodeOption {
+func OptionsFromQuery(hostItem HostConfigItem, values url.Values) []oauth2.AuthCodeOption {
 	options := []oauth2.AuthCodeOption{}
 
 	if values.Get("force") == "1" {
@@ -509,6 +521,10 @@ func OptionsFromQuery(hostItem *HostConfigItem, values url.Values) []oauth2.Auth
 
 func HtmlRedirect(url string) string {
 	return fmt.Sprintf("<html><meta http-equiv=\"refresh\" content=\"0;url='%s'\" /></html>", url)
+}
+
+type User struct {
+	Email string `json:"email"`
 }
 
 func getIdentityWithClient(url string, post bool, client *http.Client) (string, error) {
@@ -538,6 +554,16 @@ func getIdentityWithClient(url string, post bool, client *http.Client) (string, 
 
 	return user.Email, nil
 }
+
+func reportMemory() {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	log.Printf("GoRoutines:    %d.\n", runtime.NumGoroutine())
+	log.Printf("Heap           %0.2f mb.\n", float64(mem.HeapAlloc)/1024.0/1024.0)
+	log.Printf("TotalGC:       %d\n", mem.PauseTotalNs)
+}
+
+// End Util
 
 func main() {
 	done := make(chan bool, 1)
@@ -579,9 +605,18 @@ func main() {
 		}
 
 		FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
-		hci.BuildRouter(config.Server, FQDN)
+
+		hci.Router = BuildRouter(config.Server, hci, FQDN)
+
 		config.Server.DomainToHostMap[fullDomain] = hci
 	}
+
+	go func() {
+		for {
+			reportMemory()
+			time.Sleep(15 * time.Second)
+		}
+	}()
 
 	config.Server.Listen()
 

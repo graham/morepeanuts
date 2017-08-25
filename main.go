@@ -84,10 +84,10 @@ func (sci ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type HostConfigItem struct {
-	Domains             []string `toml:"domains"`
-	Dial                string   `toml:"dial"`
-	CookiePassthrough   bool     `toml:"cookie_passthrough"`
-	CookieEncryptionKey string   `toml:"cookie_encryption_key"`
+	Domain              string `toml:"domain"`
+	Dial                string `toml:"dial"`
+	CookiePassthrough   bool   `toml:"cookie_passthrough"`
+	CookieEncryptionKey string `toml:"cookie_encryption_key"`
 
 	FQDN string
 
@@ -122,8 +122,8 @@ type HostConfigItem struct {
 }
 
 func (hci *HostConfigItem) SaneDefaults() {
-	if len(hci.Domains) == 0 {
-		hci.Domains = []string{"127.0.0.1"}
+	if len(hci.Domain) == 0 {
+		hci.Domain = "127.0.0.1"
 	}
 
 	if hci.Dial == "" {
@@ -164,6 +164,7 @@ func (hci *HostConfigItem) SaneDefaults() {
 	if len(hci.Authentication.UserInfoUrl) == 0 {
 		log.Printf("Using default user info path https://www.googleapis.com/oauth2/v3/userinfo")
 		hci.Authentication.UserInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo"
+		hci.Authentication.UserInfoPost = false
 	}
 }
 
@@ -224,12 +225,14 @@ func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Header.Set("Cookie", strings.Join(remaining_cookies, ";"))
-
 	mrp.Proxy.ServeHTTP(w, r)
 }
 
 func (hci *HostConfigItem) BuildRouter(sci ServerConfigItem, FQDN string) {
 	router := httprouter.New()
+
+	identUrl := hci.Authentication.UserInfoUrl
+	identPost := hci.Authentication.UserInfoPost
 
 	target, _ := url.Parse(hci.Dial)
 	router.NotFound = SuezReverseProxy{
@@ -324,7 +327,7 @@ func (hci *HostConfigItem) BuildRouter(sci ServerConfigItem, FQDN string) {
 		))
 
 		client := OauthConfig.Client(oauth2.NoContext, tok)
-		email, email_err := getIdentityWithClient(hci, client)
+		email, email_err := getIdentityWithClient(identUrl, identPost, client)
 
 		if email_err != nil {
 			http.SetCookie(w, MakeCookie(hci.Authentication.CookieName, "", -101))
@@ -368,7 +371,7 @@ func (hci *HostConfigItem) BuildRouter(sci ServerConfigItem, FQDN string) {
 		json.Unmarshal([]byte(decrypted_code), &tok)
 
 		client := OauthConfig.Client(oauth2.NoContext, &tok)
-		email, email_err := getIdentityWithClient(hci, client)
+		email, email_err := getIdentityWithClient(identUrl, identPost, client)
 
 		if email_err != nil {
 			log.Println(email_err)
@@ -508,14 +511,14 @@ func HtmlRedirect(url string) string {
 	return fmt.Sprintf("<html><meta http-equiv=\"refresh\" content=\"0;url='%s'\" /></html>", url)
 }
 
-func getIdentityWithClient(hostItem *HostConfigItem, client *http.Client) (string, error) {
+func getIdentityWithClient(url string, post bool, client *http.Client) (string, error) {
 	var email *http.Response
 	var err error
 
-	if hostItem.Authentication.UserInfoPost {
-		email, err = client.Post(hostItem.Authentication.UserInfoUrl, "", nil)
+	if post {
+		email, err = client.Post(url, "", nil)
 	} else {
-		email, err = client.Get(hostItem.Authentication.UserInfoUrl)
+		email, err = client.Get(url)
 	}
 
 	if err != nil {
@@ -567,19 +570,17 @@ func main() {
 	for _, hci := range config.HostConfigItems {
 		hci.SaneDefaults()
 
-		for _, domain := range hci.Domains {
-			var fullDomain string
+		var fullDomain string
 
-			if config.Server.Port == 80 || config.Server.Port == 443 {
-				fullDomain = domain
-			} else {
-				fullDomain = fmt.Sprintf("%s:%d", domain, config.Server.Port)
-			}
-
-			FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
-			hci.BuildRouter(config.Server, FQDN)
-			config.Server.DomainToHostMap[fullDomain] = hci
+		if config.Server.Port == 80 || config.Server.Port == 443 {
+			fullDomain = hci.Domain
+		} else {
+			fullDomain = fmt.Sprintf("%s:%d", hci.Domain, config.Server.Port)
 		}
+
+		FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
+		hci.BuildRouter(config.Server, FQDN)
+		config.Server.DomainToHostMap[fullDomain] = hci
 	}
 
 	config.Server.Listen()

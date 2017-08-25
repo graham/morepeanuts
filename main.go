@@ -184,7 +184,24 @@ func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		email, _ := Decrypt(mrp.HostItem.CookieEncryptionKey, cookie.Value)
-		r.Header.Set("X-Suez-Auth", email)
+		if mrp.HostItem.Authorization.AllowAll {
+			r.Header.Set("X-Suez-Auth", email)
+		} else {
+			var hit bool = false
+			for _, testEmail := range mrp.HostItem.Authorization.AllowList {
+				if email == testEmail {
+					hit = true
+				}
+			}
+
+			if hit == true {
+				r.Header.Set("X-Suez-Auth", email)
+			} else {
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte("401 - Not authorized"))
+				return
+			}
+		}
 	}
 
 	cookies := r.Cookies()

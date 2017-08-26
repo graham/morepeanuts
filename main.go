@@ -237,6 +237,9 @@ type HostConfigItem struct {
 
 func (hci *HostConfigItem) SaneDefaults() {
 	if hci.Static.StaticOnly {
+		if len(hci.Static.DirectoryMappings) == 0 {
+			hci.Static.DirectoryMappings = [][]string{[]string{"/", "./"}}
+		}
 		return
 	}
 

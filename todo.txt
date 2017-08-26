@@ -1,17 +1,19 @@
 
 Must have:
+ - [ ] Just the router.
  - [ ] Per login auth log
+ - [ ] test passthrough routes.
  - [x]  Be more clear about authentication vs authorization vs identity
  - [x] Support offline and force requests.
- - [ ] Just the router.
+ - [x] passthrough routes.
 
 
 Nice to have:
- - [x] Google support.
- - [x] Dropbox (or any oauth2 support).
- - [x] Backend Example golang
- - [x] backend example python (sorta)
  - [ ] amazon oauth2 example.
  - [ ] github oauth2 example.
  - [ ] microsoft oauth2 example.
+ - [x] Backend Example golang
+ - [x] Dropbox (or any oauth2 support).
+ - [x] Google support.
+ - [x] backend example python (sorta)
 

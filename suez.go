@@ -33,13 +33,31 @@ type SuezReverseProxy struct {
 	HostItem *HostConfigItem
 }
 
+func HasPrefixFromList(s string, prefixList []string) bool {
+	for _, item := range prefixList {
+		if s[0:len(item)] == item {
+			return true
+		}
+	}
+	return false
+}
+
 func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(mrp.HostItem.Authorization.CookieName)
 
 	if err != nil {
 		if mrp.HostItem.Authorization.RequireAuth == true {
-			fmt.Fprintf(w, HtmlRedirect("/_/login?next=%s"), r.RequestURI)
-			return
+			var IsPassthrough bool = HasPrefixFromList(
+				r.RequestURI,
+				mrp.HostItem.Authorization.PassthroughRoutes,
+			)
+			if IsPassthrough {
+				r.Header.Set("X-Suez-Passthrough", "1")
+				r.Header.Set("X-Suez-Identity", "")
+			} else {
+				fmt.Fprintf(w, HtmlRedirect("/_/login?next=%s"), r.RequestURI)
+				return
+			}
 		} else {
 			r.Header.Set("X-Suez-Identity", "")
 		}
@@ -216,11 +234,12 @@ type HostConfigItem struct {
 	} `toml:"authentication"`
 
 	Authorization struct {
-		RequireAuth bool       `toml:"require_auth"`
-		AllowAll    bool       `toml:"allow_all"`
-		AllowList   []string   `toml:"allow_list"`
-		AllowArgs   [][]string `toml:"allow_args"`
-		CookieName  string     `toml:"cookie_name"`
+		RequireAuth       bool       `toml:"require_auth"`
+		AllowAll          bool       `toml:"allow_all"`
+		AllowList         []string   `toml:"allow_list"`
+		AllowArgs         [][]string `toml:"allow_args"`
+		CookieName        string     `toml:"cookie_name"`
+		PassthroughRoutes []string   `toml:"passthrough_routes"`
 	} `toml:"authorization"`
 
 	Static struct {

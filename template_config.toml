@@ -1,10 +1,14 @@
+# This is a template for configuring suez to host your domains.
+
 [server]
   secure = false
-  bind = "127.0.0.1" # what ip should the server bind to.
-  port = 9090       # what port
+  bind = "127.0.0.1"  # ip should the server bind to.
+  port = 9090
 
-  ssl_certificate = "cert/server.csr"
-  ssl_certificate_key = "cert/server.key"
+  ssl_cert_pairs = [
+     [ "/etc/letsencrypt/live/YOURDOMAIN.com/fullchain.pem",
+       "/etc/letsencrypt/live/YOURDOMAIN.com/privkey.pem" ],
+  ]
 
 [[host]]
     # Google Example

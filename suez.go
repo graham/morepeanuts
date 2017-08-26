@@ -1,4 +1,4 @@
-package main
+package suez
 
 import (
 	"crypto/aes"
@@ -16,14 +16,12 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
-	"github.com/BurntSushi/toml"
 	"github.com/gorilla/handlers"
 	"github.com/julienschmidt/httprouter"
 )
@@ -289,7 +287,7 @@ func (hci *HostConfigItem) SaneDefaults() {
 	}
 }
 
-func BuildRouter(sci ServerConfigItem, hci HostConfigItem, FQDN string) *httprouter.Router {
+func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 	router := httprouter.New()
 
 	if len(hci.Static.DirectoryMappings) > 0 {
@@ -626,72 +624,4 @@ func getIdentityWithClient(url string, post bool, client *http.Client) (string, 
 	return user.Email, nil
 }
 
-func reportMemory() {
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	log.Printf("GoRoutines:    %d.\n", runtime.NumGoroutine())
-	log.Printf("Heap           %0.2f mb.\n", float64(mem.HeapAlloc)/1024.0/1024.0)
-	log.Printf("TotalGC:       %d\n", mem.PauseTotalNs)
-}
-
 // End Util
-
-func main() {
-	done := make(chan bool, 1)
-
-	b, err := ioutil.ReadFile("config.toml")
-	if err != nil {
-		panic(err)
-	}
-
-	var config struct {
-		Server          ServerConfigItem `toml:"server"`
-		HostConfigItems []HostConfigItem `toml:"host"`
-	}
-
-	_, err = toml.Decode(string(b), &config)
-
-	if err != nil {
-		panic(err)
-	}
-
-	var protocol string
-	if config.Server.IsSecure {
-		protocol = "https"
-	} else {
-		protocol = "http"
-	}
-
-	config.Server.SaneDefaults()
-
-	for _, hci := range config.HostConfigItems {
-		hci.SaneDefaults()
-		var fullDomain string
-
-		if config.Server.Port == 80 || config.Server.Port == 443 {
-			fullDomain = hci.Domain
-		} else {
-			fullDomain = fmt.Sprintf("%s:%d", hci.Domain, config.Server.Port)
-		}
-
-		if hci.Domain == "*" {
-			config.Server.NotFound = &hci
-			config.Server.NotFound.Router = BuildRouter(config.Server, hci, "")
-		} else {
-			FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
-			hci.Router = BuildRouter(config.Server, hci, FQDN)
-			config.Server.DomainToHostMap[fullDomain] = hci
-		}
-	}
-
-	go func() {
-		for {
-			reportMemory()
-			time.Sleep(15 * time.Second)
-		}
-	}()
-
-	config.Server.Listen()
-
-	<-done
-}

@@ -1,8 +1,9 @@
 
 Must have:
  - [ ] Per login auth log
- - [ ] Be more clear about authentication vs authorization vs identity
+ - [x]  Be more clear about authentication vs authorization vs identity
  - [x] Support offline and force requests.
+ - [ ] Just the router.
 
 
 Nice to have:
@@ -10,5 +11,7 @@ Nice to have:
  - [x] Dropbox (or any oauth2 support).
  - [x] Backend Example golang
  - [x] backend example python (sorta)
- 
+ - [ ] amazon oauth2 example.
+ - [ ] github oauth2 example.
+ - [ ] microsoft oauth2 example.
 

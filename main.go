@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -94,14 +95,13 @@ func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Server Config Item
 
 type ServerConfigItem struct {
-	IsSecure              bool   `toml:"secure"`
-	Bind                  string `toml:"bind"`
-	Port                  int    `toml:"port"`
-	SSLCertificatePath    string `toml:"ssl_certificate"`
-	SSLCertificateKeyPath string `toml:"ssl_certificate_key"`
-
-	DomainToHostMap map[string]HostConfigItem
-	NotFound        *HostConfigItem
+	IsSecure             bool       `toml:"secure"`
+	Bind                 string     `toml:"bind"`
+	Port                 int        `toml:"port"`
+	SSLCertificates      [][]string `toml:"ssl_cert_pairs"`
+	AutoRedirectInsecure bool       `toml:"auto_redirect_insecure"`
+	DomainToHostMap      map[string]HostConfigItem
+	NotFound             *HostConfigItem
 }
 
 func (sci *ServerConfigItem) SaneDefaults() {
@@ -121,13 +121,46 @@ func (sci *ServerConfigItem) SaneDefaults() {
 }
 
 func (sci ServerConfigItem) Listen() {
-	if sci.IsSecure == true {
-		log.Fatal(http.ListenAndServeTLS(
-			fmt.Sprintf("%s:%d", sci.Bind, sci.Port),
-			sci.SSLCertificatePath,
-			sci.SSLCertificateKeyPath,
-			handlers.LoggingHandler(os.Stdout, sci)),
+	if sci.IsSecure && sci.AutoRedirectInsecure == true {
+		log.Printf("Staring insecure server on port 80 to redirect to %d\n", sci.Port)
+		go http.ListenAndServe(
+			fmt.Sprintf("%s:80", sci.Bind),
+			http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				var target string
+				if sci.Port != 443 {
+					target = fmt.Sprintf("https://%s:%d%s", req.Host, sci.Port, req.URL.RequestURI())
+				} else {
+					target = fmt.Sprintf("https://%s%s", req.Host, req.URL.RequestURI())
+				}
+				http.Redirect(w,
+					req,
+					target,
+					http.StatusTemporaryRedirect,
+				)
+			}),
 		)
+	}
+
+	if sci.IsSecure == true {
+		cfg := &tls.Config{}
+
+		for _, pair := range sci.SSLCertificates {
+			cert, err := tls.LoadX509KeyPair(pair[0], pair[1])
+			if err != nil {
+				log.Fatal(err)
+			}
+			cfg.Certificates = append(cfg.Certificates, cert)
+		}
+
+		cfg.BuildNameToCertificate()
+
+		server := http.Server{
+			Addr:      fmt.Sprintf("%s:%d", sci.Bind, sci.Port),
+			Handler:   handlers.LoggingHandler(os.Stdout, sci),
+			TLSConfig: cfg,
+		}
+
+		server.ListenAndServeTLS("", "")
 	} else {
 		log.Fatal(http.ListenAndServe(
 			fmt.Sprintf("%s:%d", sci.Bind, sci.Port),
@@ -193,7 +226,8 @@ type HostConfigItem struct {
 	} `toml:"authorization"`
 
 	Static struct {
-		Directory string `toml:"directory"`
+		DirectoryMappings [][]string `toml:"directory_mappings"`
+		StaticOnly        bool       `toml:"static_only"`
 	}
 
 	OauthConfig *oauth2.Config
@@ -202,7 +236,7 @@ type HostConfigItem struct {
 }
 
 func (hci *HostConfigItem) SaneDefaults() {
-	if len(hci.Static.Directory) > 0 {
+	if hci.Static.StaticOnly {
 		return
 	}
 
@@ -255,9 +289,16 @@ func (hci *HostConfigItem) SaneDefaults() {
 func BuildRouter(sci ServerConfigItem, hci HostConfigItem, FQDN string) *httprouter.Router {
 	router := httprouter.New()
 
-	if len(hci.Static.Directory) > 0 {
-		router.ServeFiles("/*filepath", http.Dir(hci.Static.Directory))
-		return router
+	if len(hci.Static.DirectoryMappings) > 0 {
+		for _, pair := range hci.Static.DirectoryMappings {
+			publicPath := fmt.Sprintf("%s*filepath", pair[0])
+			fileSystemPath := pair[1]
+			router.ServeFiles(publicPath, http.Dir(fileSystemPath))
+		}
+
+		if hci.Static.StaticOnly {
+			return router
+		}
 	}
 
 	identUrl := hci.Authentication.UserInfoUrl

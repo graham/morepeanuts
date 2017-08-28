@@ -11,7 +11,6 @@ Must have:
 Nice to have:
  - [ ] amazon oauth2 example.
  - [ ] github oauth2 example.
- - [ ] microsoft oauth2 example.
  - [x] Backend Example golang
  - [x] Dropbox (or any oauth2 support).
  - [x] Google support.

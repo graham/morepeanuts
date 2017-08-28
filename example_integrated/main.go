@@ -19,8 +19,6 @@ func main() {
 	hci.Authentication.ClientSecret = os.GetEnv("CLIENTSECRET")
 	hci.Authorization.RequireAuth = true
 
-	hci.SaneDefaults()
-
 	router := suez.BuildRouter(hci, "")
 
 	router.GET("/", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {

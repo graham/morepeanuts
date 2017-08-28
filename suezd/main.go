@@ -48,7 +48,6 @@ func main() {
 	config.Server.SaneDefaults()
 
 	for _, hci := range config.HostConfigItems {
-		hci.SaneDefaults()
 		var fullDomain string
 
 		if config.Server.Port == 80 || config.Server.Port == 443 {

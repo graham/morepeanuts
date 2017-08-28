@@ -35,8 +35,10 @@ type SuezReverseProxy struct {
 
 func HasPrefixFromList(s string, prefixList []string) bool {
 	for _, item := range prefixList {
-		if s[0:len(item)] == item {
-			return true
+		if len(s) <= len(item) {
+			if item[0:len(s)] == s {
+				return true
+			}
 		}
 	}
 	return false
@@ -267,6 +269,10 @@ func (hci *HostConfigItem) SaneDefaults() {
 
 	if hci.Dial == "" {
 		panic("Must specify a 'dial' target under [host]")
+	}
+
+	if hci.Authorization.CookieName == "" {
+		hci.Authorization.CookieName = "suez_identity_key"
 	}
 
 	if hci.Authentication.CookieName == "" {

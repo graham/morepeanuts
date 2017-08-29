@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -28,6 +29,18 @@ import (
 
 // Reverse Proxy
 
+var netTransport = &http.Transport{
+	Dial: (&net.Dialer{
+		Timeout: 5 * time.Second,
+	}).Dial,
+	TLSHandshakeTimeout: 5 * time.Second,
+}
+
+var netClient = &http.Client{
+	Timeout:   time.Second * 10,
+	Transport: netTransport,
+}
+
 type SuezReverseProxy struct {
 	Proxy    *httputil.ReverseProxy
 	HostItem *HostConfigItem
@@ -35,19 +48,47 @@ type SuezReverseProxy struct {
 
 func HasPrefixFromList(s string, prefixList []string) bool {
 	for _, item := range prefixList {
-		if len(s) <= len(item) {
-			if item[0:len(s)] == s {
-				return true
-			}
+		if strings.HasPrefix(s, item) {
+			return true
 		}
 	}
 	return false
 }
 
 func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(mrp.HostItem.Authorization.CookieName)
+	cookie, cookie_err := r.Cookie(mrp.HostItem.Authorization.CookieName)
 
-	if err != nil {
+	var identity string = ""
+	var hasIdentity bool = false
+	var needsToLogin bool = false
+
+	if cookie_err == nil {
+		var err error
+		identity, err = Decrypt(
+			mrp.HostItem.CookieEncryptionKey,
+			cookie.Value,
+		)
+		if err == nil {
+			hasIdentity = true
+		}
+	}
+
+	if hasIdentity {
+		if mrp.HostItem.Authorization.AllowAll == false {
+			var hit bool = false
+			for _, testEmail := range mrp.HostItem.Authorization.AllowList {
+				if identity == testEmail {
+					hit = true
+				}
+			}
+
+			if hit == false {
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte("401 - Not authorized"))
+				return
+			}
+		}
+	} else {
 		if mrp.HostItem.Authorization.RequireAuth == true {
 			var IsPassthrough bool = HasPrefixFromList(
 				r.RequestURI,
@@ -55,35 +96,26 @@ func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			)
 			if IsPassthrough {
 				r.Header.Set("X-Suez-Passthrough", "1")
-				r.Header.Set("X-Suez-Identity", "")
 			} else {
-				fmt.Fprintf(w, HtmlRedirect("/%slogin?next=%s"), mrp.HostItem.RouteMount, r.RequestURI)
-				return
+				needsToLogin = true
 			}
 		} else {
-			r.Header.Set("X-Suez-Identity", "")
-		}
-	} else {
-		email, _ := Decrypt(mrp.HostItem.CookieEncryptionKey, cookie.Value)
-		if mrp.HostItem.Authorization.AllowAll {
-			r.Header.Set("X-Suez-Identity", email)
-		} else {
-			var hit bool = false
-			for _, testEmail := range mrp.HostItem.Authorization.AllowList {
-				if email == testEmail {
-					hit = true
-				}
-			}
-
-			if hit == true {
-				r.Header.Set("X-Suez-Identity", email)
-			} else {
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte("401 - Not authorized"))
-				return
+			var IsGuarded bool = HasPrefixFromList(
+				r.RequestURI,
+				mrp.HostItem.Authorization.GuardedRoutes,
+			)
+			if IsGuarded {
+				needsToLogin = true
 			}
 		}
 	}
+
+	if needsToLogin {
+		fmt.Fprintf(w, HtmlRedirect("/%slogin?next=%s"), mrp.HostItem.RouteMount, r.RequestURI)
+		return
+	}
+
+	r.Header.Set("X-Suez-Identity", identity)
 
 	cookies := r.Cookies()
 	remaining_cookies := make([]string, 0)
@@ -105,6 +137,7 @@ func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Header.Set("Cookie", strings.Join(remaining_cookies, ";"))
+
 	mrp.Proxy.ServeHTTP(w, r)
 }
 
@@ -214,10 +247,8 @@ type HostConfigItem struct {
 	CookiePassthrough   bool   `toml:"cookie_passthrough"`
 	CookieEncryptionKey string `toml:"cookie_encryption_key"`
 
-	AutoRedirectInsecure bool `toml:"auto_redirect_insecure"`
-
-	FQDN       string
-	RouteMount string `toml:"route_mount"`
+	AutoRedirectInsecure bool   `toml:"auto_redirect_insecure"`
+	RouteMount           string `toml:"route_mount"`
 
 	Authentication struct {
 		CookieName         string `toml:"cookie_name"`
@@ -243,6 +274,7 @@ type HostConfigItem struct {
 		AllowArgs         [][]string `toml:"allow_args"`
 		CookieName        string     `toml:"cookie_name"`
 		PassthroughRoutes []string   `toml:"passthrough_routes"`
+		GuardedRoutes     []string   `toml:"guarded_routes"`
 	} `toml:"authorization"`
 
 	Static struct {

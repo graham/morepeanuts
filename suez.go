@@ -23,7 +23,9 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
+	"github.com/BurntSushi/toml"
 	"github.com/gorilla/handlers"
+	"github.com/graham/suez"
 	"github.com/julienschmidt/httprouter"
 )
 
@@ -782,3 +784,55 @@ func getIdentityWithClient(url string, post bool, client *http.Client) (string, 
 }
 
 // End Util
+
+func LoadServerFromConfig(filename string) ServerConfigItem {
+	b, err := ioutil.ReadFile(filename)
+
+	if err != nil {
+		panic(err)
+	}
+
+	var config struct {
+		Server          suez.ServerConfigItem `toml:"server"`
+		HostConfigItems []suez.HostConfigItem `toml:"host"`
+	}
+
+	_, err = toml.Decode(string(b), &config)
+
+	if err != nil {
+		panic(err)
+	}
+
+	var protocol string
+	if config.Server.IsSecure {
+		protocol = "https"
+	} else {
+		protocol = "http"
+	}
+
+	config.Server.SaneDefaults()
+
+	for _, hci := range config.HostConfigItems {
+		var fullDomain string
+
+		if config.Server.Port == 80 || config.Server.Port == 443 {
+			fullDomain = hci.Domain
+		} else {
+			fullDomain = fmt.Sprintf("%s:%d", hci.Domain, config.Server.Port)
+		}
+
+		if hci.Domain == "*" {
+			config.Server.NotFound = &hci
+			if config.Server.IsSecure == false {
+				hci.OuterProtocol = "http"
+			}
+			config.Server.NotFound.Router = suez.BuildRouter(hci, "")
+		} else {
+			FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
+			hci.Router = suez.BuildRouter(hci, FQDN)
+			config.Server.DomainToHostMap[fullDomain] = hci
+		}
+	}
+
+	return config.Server
+}

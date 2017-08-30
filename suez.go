@@ -373,7 +373,7 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 			))
 
 			client := OauthConfig.Client(oauth2.NoContext, tok)
-			email, email_err := getIdentityWithClient(identUrl, identPost, client)
+			email, email_err := GetIdentityWithClient(identUrl, identPost, client)
 
 			if email_err != nil {
 				http.SetCookie(w, MakeCookie(hci.Authentication.CookieName, "", -101))

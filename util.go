@@ -107,7 +107,7 @@ type User struct {
 	Email string `json:"email"`
 }
 
-func getIdentityWithClient(url string, post bool, client *http.Client) (string, error) {
+func GetIdentityWithClient(url string, post bool, client *http.Client) (string, error) {
 	var email *http.Response
 	var err error
 

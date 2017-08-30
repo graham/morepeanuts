@@ -418,7 +418,7 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 			json.Unmarshal([]byte(decrypted_code), &tok)
 
 			client := OauthConfig.Client(oauth2.NoContext, &tok)
-			email, email_err := getIdentityWithClient(identUrl, identPost, client)
+			email, email_err := GetIdentityWithClient(identUrl, identPost, client)
 
 			if email_err != nil {
 				log.Println(email_err)

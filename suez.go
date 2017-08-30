@@ -1,15 +1,9 @@
 package suez
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -25,7 +19,6 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/gorilla/handlers"
-	"github.com/graham/suez"
 	"github.com/julienschmidt/httprouter"
 )
 
@@ -42,182 +35,6 @@ var netClient = &http.Client{
 	Timeout:   time.Second * 10,
 	Transport: netTransport,
 }
-
-type GatekeeperResponse int
-
-const (
-	GATEKEEPER_ALLOW GatekeeperResponse = iota // User is allowed.
-	GATEKEEPER_DENY  GatekeeperResponse = iota // User is not allowed.
-	GATEKEEPER_AUTH  GatekeeperResponse = iota // User requires authentication.
-	GATEKEEPER_PAUSE GatekeeperResponse = iota // Server should slow down user.
-)
-
-type Gatekeeper interface {
-	IsAllowed(hci *HostConfigItem, identity, fulluri string) GatekeeperResponse
-}
-
-type DefaultGatekeeper struct{}
-
-func (g DefaultGatekeeper) IsAllowed(hci *HostConfigItem, identity, fulluri string) GatekeeperResponse {
-	if len(identity) == 0 {
-		if hci.Authorization.AllowAll == false {
-			var hit bool = false
-			for _, testEmail := range hci.Authorization.AllowList {
-				if testEmail[0] == '@' && strings.HasSuffix(identity, testEmail) {
-					hit = true
-				} else if identity == testEmail {
-					hit = true
-				}
-			}
-
-			if hit == false {
-				return GATEKEEPER_DENY
-			}
-		}
-	} else {
-		if hci.Authorization.RequireAuth == true {
-			var IsPassthrough bool = HasPrefixFromList(
-				fulluri,
-				hci.Authorization.PassthroughRoutes,
-			)
-			if IsPassthrough == false {
-				return GATEKEEPER_AUTH
-			}
-		} else {
-			var IsGuarded bool = HasPrefixFromList(
-				fulluri,
-				hci.Authorization.GuardedRoutes,
-			)
-			if IsGuarded == true {
-				return GATEKEEPER_AUTH
-			}
-		}
-	}
-	return GATEKEEPER_ALLOW
-}
-
-type SuezReverseProxy struct {
-	Proxy    *httputil.ReverseProxy
-	HostItem *HostConfigItem
-}
-
-func HasPrefixFromList(s string, prefixList []string) bool {
-	for _, item := range prefixList {
-		if strings.HasPrefix(s, item) {
-			return true
-		}
-	}
-	return false
-}
-
-func customDial(target string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		d, err := net.Dial("tcp", target)
-
-		if err != nil {
-			http.Error(w, "Error contacting backend server.", 500)
-			log.Printf("Error custom dial %s: %v", target, err)
-			return
-		}
-
-		hj, ok := w.(http.Hijacker)
-		if !ok {
-			http.Error(w, "Not a hijacker?", 500)
-			return
-		}
-
-		nc, _, err := hj.Hijack()
-		if err != nil {
-			log.Printf("Hijack error: %v", err)
-			return
-		}
-
-		defer nc.Close()
-		defer d.Close()
-
-		err = r.Write(d)
-		if err != nil {
-			log.Printf("Error copying request to target: %v", err)
-			return
-		}
-
-		errc := make(chan error, 2)
-		cp := func(dst io.Writer, src io.Reader) {
-			_, err := io.Copy(dst, src)
-			errc <- err
-		}
-
-		go cp(d, nc)
-		go cp(nc, d)
-		<-errc
-	})
-}
-
-func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var identity string = ""
-
-	cookie, cookie_err := r.Cookie(mrp.HostItem.Authorization.CookieName)
-
-	if cookie_err == nil {
-		var err error
-		identity, err = Decrypt(
-			mrp.HostItem.CookieEncryptionKey,
-			cookie.Value,
-		)
-		if err == nil {
-			identity = ""
-		}
-	}
-
-	result := mrp.HostItem.Authorization.Gatekeeper.IsAllowed(
-		mrp.HostItem,
-		identity,
-		r.RequestURI,
-	)
-	fmt.Println("Gatekeeper", identity, r.RequestURI, result)
-
-	if result == GATEKEEPER_AUTH {
-		fmt.Fprintf(w, HtmlRedirect("/%slogin?next=%s"), mrp.HostItem.RouteMount, r.RequestURI)
-		return
-	} else if result == GATEKEEPER_DENY {
-		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte("401 - Not authorized"))
-		return
-	}
-
-	r.Header.Set("X-Suez-Identity", identity)
-
-	cookies := r.Cookies()
-	remaining_cookies := make([]string, 0)
-
-	for _, i := range cookies {
-		if i.Name == mrp.HostItem.Authentication.CookieName ||
-			i.Name == mrp.HostItem.Authorization.CookieName {
-			if mrp.HostItem.CookiePassthrough == false {
-				continue
-			} else {
-				newValue, _ := Decrypt(mrp.HostItem.CookieEncryptionKey, i.Value)
-				i.Value = base64.URLEncoding.EncodeToString([]byte(newValue))
-			}
-		}
-		remaining_cookies = append(
-			remaining_cookies,
-			MakeCookie(i.Name, i.Value, 1).String(),
-		)
-	}
-
-	r.Header.Set("Cookie", strings.Join(remaining_cookies, ";"))
-
-	if _, found := r.Header["Upgrade"]; found == true {
-		dialer := customDial(mrp.HostItem.Dial)
-		dialer.ServeHTTP(w, r)
-		return
-	}
-
-	mrp.Proxy.ServeHTTP(w, r)
-}
-
-// End Reverse Proxy
 
 // Server Config Item
 
@@ -318,31 +135,27 @@ func (sci ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Host Config Item
 
 type HostConfigItem struct {
-	Domain              string `toml:"domain"`
-	Dial                string `toml:"dial"`
-	InnerProtocol       string `toml:"protocol"`
-	OuterProtocol       string
-	CookiePassthrough   bool   `toml:"cookie_passthrough"`
-	CookieEncryptionKey string `toml:"cookie_encryption_key"`
-
-	AutoRedirectInsecure bool   `toml:"auto_redirect_insecure"`
-	RouteMount           string `toml:"route_mount"`
+	Domain                string `toml:"domain"`
+	Dial                  string `toml:"dial"`
+	InnerProtocol         string `toml:"protocol"`
+	OuterProtocol         string
+	CookiePassthrough     bool   `toml:"cookie_passthrough"`
+	CookieEncryptionKey   string `toml:"cookie_encryption_key"`
+	AutoRedirectInsecure  bool   `toml:"auto_redirect_insecure"`
+	RouteMount            string `toml:"route_mount"`
+	AlwaysUseCustomDialer bool   `toml:"always_use_custom_dialer"`
 
 	Authentication struct {
-		CookieName         string `toml:"cookie_name"`
-		CookieDurationDays int    `toml:"cookie_duration_days"`
-
-		ClientID     string `toml:"client_id"`
-		ClientSecret string `toml:"client_secret"`
-
-		InitScopes []string `toml:"init_scopes"`
-
-		AddValues    [][]string `toml:"add_values"`
-		UserInfoUrl  string     `toml:"user_info_url"`
-		UserInfoPost bool       `toml:"user_info_method_post"`
-
-		EndpointStr []string `toml:"endpoint"`
-		Endpoint    oauth2.Endpoint
+		CookieName         string     `toml:"cookie_name"`
+		CookieDurationDays int        `toml:"cookie_duration_days"`
+		ClientID           string     `toml:"client_id"`
+		ClientSecret       string     `toml:"client_secret"`
+		InitScopes         []string   `toml:"init_scopes"`
+		AddValues          [][]string `toml:"add_values"`
+		UserInfoUrl        string     `toml:"user_info_url"`
+		UserInfoPost       bool       `toml:"user_info_method_post"`
+		EndpointStr        []string   `toml:"endpoint"`
+		Endpoint           oauth2.Endpoint
 	} `toml:"authentication"`
 
 	Authorization struct {
@@ -361,8 +174,9 @@ type HostConfigItem struct {
 		StaticOnly        bool       `toml:"static_only"`
 	}
 
-	OauthConfig *oauth2.Config
-	Router      http.Handler
+	OauthConfig  *oauth2.Config
+	Router       http.Handler
+	CustomDialer SuezDialerInterface
 }
 
 func (hci *HostConfigItem) SaneDefaults() {
@@ -435,6 +249,9 @@ func (hci *HostConfigItem) SaneDefaults() {
 	}
 
 	hci.Authorization.Gatekeeper = DefaultGatekeeper{}
+	if hci.CustomDialer == nil {
+		hci.CustomDialer = SuezDialer{}
+	}
 }
 
 func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
@@ -664,127 +481,6 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 
 // End Host Config Item
 
-// Util
-
-func Encrypt(key string, text string) (string, error) {
-	if len(key) == 0 {
-		return text, nil
-	}
-	block, err := aes.NewCipher([]byte(key))
-	if err != nil {
-		return "", err
-	}
-	b := base64.URLEncoding.EncodeToString([]byte(text))
-	ciphertext := make([]byte, aes.BlockSize+len(b))
-	iv := ciphertext[:aes.BlockSize]
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return "", err
-	}
-	cfb := cipher.NewCFBEncrypter(block, iv)
-	cfb.XORKeyStream(ciphertext[aes.BlockSize:], []byte(b))
-	bc := base64.URLEncoding.EncodeToString(ciphertext)
-	return bc, nil
-}
-
-func Decrypt(key, b64text string) (string, error) {
-	text, _ := base64.URLEncoding.DecodeString(b64text)
-	if len(key) == 0 {
-		return string(text), nil
-	}
-	block, err := aes.NewCipher([]byte(key))
-	if err != nil {
-		return "", err
-	}
-	if len(text) < aes.BlockSize {
-		return "", errors.New("ciphertext too short")
-	}
-	iv := text[:aes.BlockSize]
-	text = text[aes.BlockSize:]
-	cfb := cipher.NewCFBDecrypter(block, iv)
-	cfb.XORKeyStream(text, text)
-	data, err := base64.URLEncoding.DecodeString(string(text))
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
-func MakeCookie(key string, value string, days int) *http.Cookie {
-	// log.Printf("Making cookie %s with value %s for %d days\n", key, value, days)
-	expiration := time.Now().AddDate(0, 0, days)
-
-	return &http.Cookie{
-		Name:    key,
-		Value:   value,
-		Expires: expiration,
-		Path:    "/",
-	}
-}
-
-func GenRandomString() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return base64.URLEncoding.EncodeToString(b)
-}
-
-func OptionsFromQuery(hostItem HostConfigItem, values url.Values) []oauth2.AuthCodeOption {
-	options := []oauth2.AuthCodeOption{}
-
-	if values.Get("force") == "1" {
-		options = append(options, oauth2.ApprovalForce)
-	}
-
-	if values.Get("offline") == "1" {
-		options = append(options, oauth2.AccessTypeOffline)
-	}
-
-	// Since oauth2.AccessTypeOnline is default, we'll just leave.
-
-	for _, row := range hostItem.Authentication.AddValues {
-		options = append(options, oauth2.SetAuthURLParam(row[0], row[1]))
-	}
-
-	return options
-}
-
-func HtmlRedirect(url string) string {
-	return fmt.Sprintf("<html><meta http-equiv=\"refresh\" content=\"0;url='%s'\" /></html>", url)
-}
-
-type User struct {
-	Email string `json:"email"`
-}
-
-func getIdentityWithClient(url string, post bool, client *http.Client) (string, error) {
-	var email *http.Response
-	var err error
-
-	if post {
-		email, err = client.Post(url, "", nil)
-	} else {
-		email, err = client.Get(url)
-	}
-
-	if err != nil {
-		return "", err
-	}
-
-	defer email.Body.Close()
-
-	data, _ := ioutil.ReadAll(email.Body)
-
-	var user User
-	err = json.Unmarshal(data, &user)
-
-	if err != nil {
-		return "", err
-	}
-
-	return user.Email, nil
-}
-
-// End Util
-
 func LoadServerFromConfig(filename string) ServerConfigItem {
 	b, err := ioutil.ReadFile(filename)
 
@@ -793,8 +489,8 @@ func LoadServerFromConfig(filename string) ServerConfigItem {
 	}
 
 	var config struct {
-		Server          suez.ServerConfigItem `toml:"server"`
-		HostConfigItems []suez.HostConfigItem `toml:"host"`
+		Server          ServerConfigItem `toml:"server"`
+		HostConfigItems []HostConfigItem `toml:"host"`
 	}
 
 	_, err = toml.Decode(string(b), &config)
@@ -826,10 +522,10 @@ func LoadServerFromConfig(filename string) ServerConfigItem {
 			if config.Server.IsSecure == false {
 				hci.OuterProtocol = "http"
 			}
-			config.Server.NotFound.Router = suez.BuildRouter(hci, "")
+			config.Server.NotFound.Router = BuildRouter(hci, "")
 		} else {
 			FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
-			hci.Router = suez.BuildRouter(hci, FQDN)
+			hci.Router = BuildRouter(hci, FQDN)
 			config.Server.DomainToHostMap[fullDomain] = hci
 		}
 	}

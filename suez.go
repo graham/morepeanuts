@@ -41,6 +41,59 @@ var netClient = &http.Client{
 	Transport: netTransport,
 }
 
+type GatekeeperResponse int
+
+const (
+	GATEKEEPER_ALLOW GatekeeperResponse = iota // User is allowed.
+	GATEKEEPER_DENY  GatekeeperResponse = iota // User is not allowed.
+	GATEKEEPER_AUTH  GatekeeperResponse = iota // User requires authentication.
+	GATEKEEPER_PAUSE GatekeeperResponse = iota // Server should slow down user.
+)
+
+type Gatekeeper interface {
+	IsAllowed(hci *HostConfigItem, identity, fulluri string) GatekeeperResponse
+}
+
+type DefaultGatekeeper struct{}
+
+func (g DefaultGatekeeper) IsAllowed(hci *HostConfigItem, identity, fulluri string) GatekeeperResponse {
+	if len(identity) == 0 {
+		if hci.Authorization.AllowAll == false {
+			var hit bool = false
+			for _, testEmail := range hci.Authorization.AllowList {
+				if testEmail[0] == '@' && strings.HasSuffix(identity, testEmail) {
+					hit = true
+				} else if identity == testEmail {
+					hit = true
+				}
+			}
+
+			if hit == false {
+				return GATEKEEPER_DENY
+			}
+		}
+	} else {
+		if hci.Authorization.RequireAuth == true {
+			var IsPassthrough bool = HasPrefixFromList(
+				fulluri,
+				hci.Authorization.PassthroughRoutes,
+			)
+			if IsPassthrough == false {
+				return GATEKEEPER_AUTH
+			}
+		} else {
+			var IsGuarded bool = HasPrefixFromList(
+				fulluri,
+				hci.Authorization.GuardedRoutes,
+			)
+			if IsGuarded == true {
+				return GATEKEEPER_AUTH
+			}
+		}
+	}
+	return GATEKEEPER_ALLOW
+}
+
 type SuezReverseProxy struct {
 	Proxy    *httputil.ReverseProxy
 	HostItem *HostConfigItem
@@ -55,12 +108,53 @@ func HasPrefixFromList(s string, prefixList []string) bool {
 	return false
 }
 
-func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	cookie, cookie_err := r.Cookie(mrp.HostItem.Authorization.CookieName)
+func customDial(target string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d, err := net.Dial("tcp", target)
 
+		if err != nil {
+			http.Error(w, "Error contacting backend server.", 500)
+			log.Printf("Error custom dial %s: %v", target, err)
+			return
+		}
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "Not a hijacker?", 500)
+			return
+		}
+
+		nc, _, err := hj.Hijack()
+		if err != nil {
+			log.Printf("Hijack error: %v", err)
+			return
+		}
+
+		defer nc.Close()
+		defer d.Close()
+
+		err = r.Write(d)
+		if err != nil {
+			log.Printf("Error copying request to target: %v", err)
+			return
+		}
+
+		errc := make(chan error, 2)
+		cp := func(dst io.Writer, src io.Reader) {
+			_, err := io.Copy(dst, src)
+			errc <- err
+		}
+
+		go cp(d, nc)
+		go cp(nc, d)
+		<-errc
+	})
+}
+
+func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var identity string = ""
-	var hasIdentity bool = false
-	var needsToLogin bool = false
+
+	cookie, cookie_err := r.Cookie(mrp.HostItem.Authorization.CookieName)
 
 	if cookie_err == nil {
 		var err error
@@ -69,49 +163,23 @@ func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			cookie.Value,
 		)
 		if err == nil {
-			hasIdentity = true
+			identity = ""
 		}
 	}
 
-	if hasIdentity {
-		if mrp.HostItem.Authorization.AllowAll == false {
-			var hit bool = false
-			for _, testEmail := range mrp.HostItem.Authorization.AllowList {
-				if identity == testEmail {
-					hit = true
-				}
-			}
+	result := mrp.HostItem.Authorization.Gatekeeper.IsAllowed(
+		mrp.HostItem,
+		identity,
+		r.RequestURI,
+	)
+	fmt.Println("Gatekeeper", identity, r.RequestURI, result)
 
-			if hit == false {
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte("401 - Not authorized"))
-				return
-			}
-		}
-	} else {
-		if mrp.HostItem.Authorization.RequireAuth == true {
-			var IsPassthrough bool = HasPrefixFromList(
-				r.RequestURI,
-				mrp.HostItem.Authorization.PassthroughRoutes,
-			)
-			if IsPassthrough {
-				r.Header.Set("X-Suez-Passthrough", "1")
-			} else {
-				needsToLogin = true
-			}
-		} else {
-			var IsGuarded bool = HasPrefixFromList(
-				r.RequestURI,
-				mrp.HostItem.Authorization.GuardedRoutes,
-			)
-			if IsGuarded {
-				needsToLogin = true
-			}
-		}
-	}
-
-	if needsToLogin {
+	if result == GATEKEEPER_AUTH {
 		fmt.Fprintf(w, HtmlRedirect("/%slogin?next=%s"), mrp.HostItem.RouteMount, r.RequestURI)
+		return
+	} else if result == GATEKEEPER_DENY {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte("401 - Not authorized"))
 		return
 	}
 
@@ -137,6 +205,12 @@ func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Header.Set("Cookie", strings.Join(remaining_cookies, ";"))
+
+	if _, found := r.Header["Upgrade"]; found == true {
+		dialer := customDial(mrp.HostItem.Dial)
+		dialer.ServeHTTP(w, r)
+		return
+	}
 
 	mrp.Proxy.ServeHTTP(w, r)
 }
@@ -244,6 +318,8 @@ func (sci ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type HostConfigItem struct {
 	Domain              string `toml:"domain"`
 	Dial                string `toml:"dial"`
+	InnerProtocol       string `toml:"protocol"`
+	OuterProtocol       string
 	CookiePassthrough   bool   `toml:"cookie_passthrough"`
 	CookieEncryptionKey string `toml:"cookie_encryption_key"`
 
@@ -268,13 +344,14 @@ type HostConfigItem struct {
 	} `toml:"authentication"`
 
 	Authorization struct {
-		RequireAuth       bool       `toml:"require_auth"`
-		AllowAll          bool       `toml:"allow_all"`
-		AllowList         []string   `toml:"allow_list"`
-		AllowArgs         [][]string `toml:"allow_args"`
-		CookieName        string     `toml:"cookie_name"`
-		PassthroughRoutes []string   `toml:"passthrough_routes"`
-		GuardedRoutes     []string   `toml:"guarded_routes"`
+		RequireAuth       bool        `toml:"require_auth"`
+		AllowAll          bool        `toml:"allow_all"`
+		AllowList         []string    `toml:"allow_list"`
+		CookieName        string      `toml:"cookie_name"`
+		PassthroughRoutes []string    `toml:"passthrough_routes"`
+		GuardedRoutes     []string    `toml:"guarded_routes"`
+		GatekeeperArgs    interface{} `toml:"gatekeeper_args"`
+		Gatekeeper        Gatekeeper
 	} `toml:"authorization"`
 
 	Static struct {
@@ -284,7 +361,6 @@ type HostConfigItem struct {
 
 	OauthConfig *oauth2.Config
 	Router      http.Handler
-	Proxy       *httputil.ReverseProxy
 }
 
 func (hci *HostConfigItem) SaneDefaults() {
@@ -301,6 +377,14 @@ func (hci *HostConfigItem) SaneDefaults() {
 
 	if hci.Dial == "" {
 		panic("Must specify a 'dial' target under [host]")
+	}
+
+	if hci.InnerProtocol == "" {
+		hci.InnerProtocol = "http"
+	}
+
+	if hci.OuterProtocol == "" {
+		hci.OuterProtocol = "https"
 	}
 
 	if hci.Authorization.CookieName == "" {
@@ -347,6 +431,8 @@ func (hci *HostConfigItem) SaneDefaults() {
 	if hci.RouteMount == "" {
 		hci.RouteMount = "_/"
 	}
+
+	hci.Authorization.Gatekeeper = DefaultGatekeeper{}
 }
 
 func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
@@ -368,7 +454,8 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 	identUrl := hci.Authentication.UserInfoUrl
 	identPost := hci.Authentication.UserInfoPost
 
-	target, _ := url.Parse(hci.Dial)
+	target, _ := url.Parse(fmt.Sprintf("%s://%s", hci.InnerProtocol, hci.Dial))
+
 	router.NotFound = SuezReverseProxy{
 		Proxy:    httputil.NewSingleHostReverseProxy(target),
 		HostItem: &hci,
@@ -405,7 +492,7 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 
 			options := OptionsFromQuery(hci, queryValues)
 			if len(FQDN) == 0 {
-				OauthConfig.RedirectURL = fmt.Sprintf("http://%s/%sauth", r.Host, hci.RouteMount)
+				OauthConfig.RedirectURL = fmt.Sprintf("%s://%s/%sauth", hci.OuterProtocol, r.Host, hci.RouteMount)
 			}
 			url := OauthConfig.AuthCodeURL(randomToken, options...)
 			fmt.Fprintln(w, HtmlRedirect(url))
@@ -560,7 +647,7 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 			options := OptionsFromQuery(hci, queryValues)
 
 			if len(FQDN) == 0 {
-				OauthConfig.RedirectURL = fmt.Sprintf("http://%s/%sauth", r.Host, hci.RouteMount)
+				OauthConfig.RedirectURL = fmt.Sprintf("%s://%s/%sauth", hci.OuterProtocol, r.Host, hci.RouteMount)
 			}
 			fmt.Fprintln(w, HtmlRedirect(TempOauthConfig.AuthCodeURL(randomToken, options...)))
 		})

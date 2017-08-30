@@ -3,12 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"sync"
 
 	"github.com/gorilla/handlers"
+	"github.com/gorilla/websocket"
 	"github.com/julienschmidt/httprouter"
 )
 
@@ -36,6 +38,11 @@ type Value struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
 	Error error  `json:"error"`
+}
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
 }
 
 func getIdentity(r *http.Request) string {
@@ -136,8 +143,38 @@ func main() {
 		fmt.Fprintf(w, string(bdata))
 	})
 
+	router.GET("/ws", func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+
+		if err != nil {
+			fmt.Fprintf(w, "No, you need to ws connect.")
+			return
+		}
+
+		go func() error {
+			for {
+				messageType, r, err := conn.NextReader()
+				if err != nil {
+					return err
+				}
+				w, err := conn.NextWriter(messageType)
+				if err != nil {
+					return err
+				}
+				if _, err := io.Copy(w, r); err != nil {
+					return err
+				}
+				if err := w.Close(); err != nil {
+					return err
+				}
+			}
+		}()
+	})
+
+	router.ServeFiles("/static/*filepath", http.Dir("/var/www/html/gawstest"))
+
 	log.Fatal(http.ListenAndServe(
-		fmt.Sprintf("%s:%d", "127.0.0.1", 8080),
+		fmt.Sprintf("%s:%d", "0.0.0.0", 8080),
 		handlers.LoggingHandler(os.Stdout, router)),
 	)
 

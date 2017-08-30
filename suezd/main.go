@@ -58,6 +58,9 @@ func main() {
 
 		if hci.Domain == "*" {
 			config.Server.NotFound = &hci
+			if config.Server.IsSecure == false {
+				hci.OuterProtocol = "http"
+			}
 			config.Server.NotFound.Router = suez.BuildRouter(hci, "")
 		} else {
 			FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)

@@ -8,12 +8,12 @@ import (
 	"strings"
 )
 
-type SuezReverseProxy struct {
+type ReverseProxy struct {
 	Proxy    *httputil.ReverseProxy
 	HostItem *HostConfigItem
 }
 
-func (mrp SuezReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (mrp ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var identity string = ""
 
 	cookie, cookie_err := r.Cookie(mrp.HostItem.Authorization.CookieName)

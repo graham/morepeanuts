@@ -176,7 +176,7 @@ type HostConfigItem struct {
 
 	OauthConfig  *oauth2.Config
 	Router       http.Handler
-	CustomDialer SuezDialerInterface
+	CustomDialer DialerInterface
 }
 
 func (hci *HostConfigItem) SaneDefaults() {
@@ -250,7 +250,7 @@ func (hci *HostConfigItem) SaneDefaults() {
 
 	hci.Authorization.Gatekeeper = DefaultGatekeeper{}
 	if hci.CustomDialer == nil {
-		hci.CustomDialer = SuezDialer{}
+		hci.CustomDialer = DefaultDialer{}
 	}
 }
 
@@ -275,7 +275,7 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 
 	target, _ := url.Parse(fmt.Sprintf("%s://%s", hci.InnerProtocol, hci.Dial))
 
-	router.NotFound = SuezReverseProxy{
+	router.NotFound = ReverseProxy{
 		Proxy:    httputil.NewSingleHostReverseProxy(target),
 		HostItem: &hci,
 	}

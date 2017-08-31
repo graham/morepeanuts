@@ -7,13 +7,13 @@ import (
 	"net/http"
 )
 
-type SuezDialerInterface interface {
+type Dialer interface {
 	Dial(target string) http.Handler
 }
 
-type SuezDialer struct{}
+type DefaultDialer struct{}
 
-func (sd SuezDialer) Dial(target string) http.Handler {
+func (sd DefaultDialer) Dial(target string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d, err := net.Dial("tcp", target)
 

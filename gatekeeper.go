@@ -29,25 +29,6 @@ func (g DefaultGatekeeper) IsAllowed(hci *HostConfigItem, identity string, r *ht
 
 	if len(identity) == 0 {
 		if hci.Authorization.RequireAuth == true {
-			return GATEKEEPER_AUTH
-		}
-
-		if hci.Authorization.AllowAll == false {
-			var hit bool = false
-			for _, testEmail := range hci.Authorization.AllowList {
-				if testEmail[0] == '@' && strings.HasSuffix(identity, testEmail) {
-					hit = true
-				} else if identity == testEmail {
-					hit = true
-				}
-			}
-
-			if hit == false {
-				return GATEKEEPER_DENY
-			}
-		}
-	} else {
-		if hci.Authorization.RequireAuth == true {
 			var IsPassthrough bool = HasPrefixFromList(
 				fulluri,
 				hci.Authorization.PassthroughRoutes,
@@ -62,6 +43,21 @@ func (g DefaultGatekeeper) IsAllowed(hci *HostConfigItem, identity string, r *ht
 			)
 			if IsGuarded == true {
 				return GATEKEEPER_AUTH
+			}
+		}
+	} else {
+		if hci.Authorization.AllowAll == false {
+			var hit bool = false
+			for _, testEmail := range hci.Authorization.AllowList {
+				if testEmail[0] == '@' && strings.HasSuffix(identity, testEmail) {
+					hit = true
+				} else if identity == testEmail {
+					hit = true
+				}
+			}
+
+			if hit == false {
+				return GATEKEEPER_DENY
 			}
 		}
 	}

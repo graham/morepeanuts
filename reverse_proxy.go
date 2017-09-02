@@ -28,9 +28,6 @@ func (mrp ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			mrp.HostItem.CookieEncryptionKey,
 			cookie.Value,
 		)
-		if err == nil {
-			identity = ""
-		}
 	}
 
 	result := gatekeeper.IsAllowed(

@@ -405,6 +405,9 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 
 	router.GET(fmt.Sprintf("/%stest", hci.RouteMount),
 		func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+			encrypted_ident_string, _ := r.Cookie(hci.Authorization.CookieName)
+			ident_string, _ := Decrypt(hci.CookieEncryptionKey, encrypted_ident_string.Value)
+
 			cookie, err := r.Cookie(hci.Authentication.CookieName)
 			var tok oauth2.Token
 
@@ -426,7 +429,10 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 				return
 			}
 
-			fmt.Fprintf(w, "<html><body>%s</body></html>", email)
+			fmt.Fprintf(w, "<html><body>")
+			fmt.Fprintf(w, "<div>IdentityKey   : %s</div>", ident_string)
+			fmt.Fprintf(w, "<div>ClientIdentity: %s</div>", email)
+			fmt.Fprintf(w, "</body></html>")
 		})
 
 	router.GET(fmt.Sprintf("/%slanding", hci.RouteMount),

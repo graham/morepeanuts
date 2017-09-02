@@ -1,6 +1,9 @@
 package suez
 
-import "strings"
+import (
+	"net/http"
+	"strings"
+)
 
 type GatekeeperResponse int
 
@@ -13,13 +16,22 @@ const (
 )
 
 type Gatekeeper interface {
-	IsAllowed(hci *HostConfigItem, identity, fulluri string) GatekeeperResponse
+	IsAllowed(hci *HostConfigItem, identity string, r *http.Request) GatekeeperResponse
+	BackpressureTime(identity string, r *http.Request) int
 }
 
 type DefaultGatekeeper struct{}
 
-func (g DefaultGatekeeper) IsAllowed(hci *HostConfigItem, identity, fulluri string) GatekeeperResponse {
+func (g DefaultGatekeeper) IsAllowed(hci *HostConfigItem, identity string, r *http.Request) GatekeeperResponse {
+	var fulluri string = r.RequestURI
+
+	//defer timeTrack(time.Now(), fmt.Sprintf("DefaultGatekeeper.IsAllowed - %s - ", fulluri))
+
 	if len(identity) == 0 {
+		if hci.Authorization.RequireAuth == true {
+			return GATEKEEPER_AUTH
+		}
+
 		if hci.Authorization.AllowAll == false {
 			var hit bool = false
 			for _, testEmail := range hci.Authorization.AllowList {
@@ -54,4 +66,8 @@ func (g DefaultGatekeeper) IsAllowed(hci *HostConfigItem, identity, fulluri stri
 		}
 	}
 	return GATEKEEPER_ALLOW
+}
+
+func (g DefaultGatekeeper) BackpressureTime(identity string, r *http.Request) int {
+	return 250
 }

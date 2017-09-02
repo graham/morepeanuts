@@ -138,7 +138,6 @@ type HostConfigItem struct {
 	Domain                string `toml:"domain"`
 	Dial                  string `toml:"dial"`
 	InnerProtocol         string `toml:"protocol"`
-	OuterProtocol         string
 	CookiePassthrough     bool   `toml:"cookie_passthrough"`
 	CookieEncryptionKey   string `toml:"cookie_encryption_key"`
 	AutoRedirectInsecure  bool   `toml:"auto_redirect_insecure"`
@@ -174,9 +173,11 @@ type HostConfigItem struct {
 		StaticOnly        bool       `toml:"static_only"`
 	}
 
-	OauthConfig  *oauth2.Config
-	Router       http.Handler
-	CustomDialer DialerInterface
+	OauthConfig   *oauth2.Config
+	Router        http.Handler
+	CustomDialer  Dialer
+	OuterProtocol string
+	Logger        Logger
 }
 
 func (hci *HostConfigItem) SaneDefaults() {
@@ -249,9 +250,8 @@ func (hci *HostConfigItem) SaneDefaults() {
 	}
 
 	hci.Authorization.Gatekeeper = DefaultGatekeeper{}
-	if hci.CustomDialer == nil {
-		hci.CustomDialer = DefaultDialer{}
-	}
+	hci.CustomDialer = DefaultDialer{}
+	hci.Logger = NewDefaultLogger()
 }
 
 func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {

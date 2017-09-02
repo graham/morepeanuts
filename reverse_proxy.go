@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"time"
 )
 
 type ReverseProxy struct {
@@ -14,7 +15,10 @@ type ReverseProxy struct {
 }
 
 func (mrp ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	//defer timeTrack(time.Now(), fmt.Sprintf("ReverseProxy.ServeHTTP - %s - ", r.RequestURI))
+
 	var identity string = ""
+	var gatekeeper Gatekeeper = mrp.HostItem.Authorization.Gatekeeper
 
 	cookie, cookie_err := r.Cookie(mrp.HostItem.Authorization.CookieName)
 
@@ -29,20 +33,33 @@ func (mrp ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result := mrp.HostItem.Authorization.Gatekeeper.IsAllowed(
+	result := gatekeeper.IsAllowed(
 		mrp.HostItem,
 		identity,
-		r.RequestURI,
+		r,
 	)
-	fmt.Println("Gatekeeper", identity, r.RequestURI, result)
 
 	if result == GATEKEEPER_AUTH {
-		fmt.Fprintf(w, HtmlRedirect("/%slogin?next=%s"), mrp.HostItem.RouteMount, r.RequestURI)
+		fmt.Fprintf(w, HtmlRedirect(
+			"/%slogin?next=%s"),
+			mrp.HostItem.RouteMount,
+			r.RequestURI)
 		return
 	} else if result == GATEKEEPER_DENY {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte("401 - Not authorized"))
+		w.Write([]byte("401 - Not Authorized"))
 		return
+	} else if result == GATEKEEPER_LIMIT {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte("429 - Too Many Requests"))
+		return
+	} else if result == GATEKEEPER_BACKPRESSURE {
+		// Delay before connection to backend is made.
+		// could be to slow down a client, or to rate limit
+		// an ip, or to help a backend recover.
+		ms := gatekeeper.BackpressureTime(identity, r)
+		var d time.Duration = time.Duration(ms) * time.Millisecond
+		time.Sleep(d)
 	}
 
 	r.Header.Set("X-Suez-Identity", identity)

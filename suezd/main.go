@@ -11,9 +11,11 @@ import (
 func reportMemory() {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
-	log.Printf("GoRoutines:    %d.\n", runtime.NumGoroutine())
-	log.Printf("Heap           %0.2f mb.\n", float64(mem.HeapAlloc)/1024.0/1024.0)
-	log.Printf("TotalGC:       %d\n", mem.PauseTotalNs)
+	log.Printf("GoRoutines: %d | Heap: %0.2f mb | GCTime: %d",
+		runtime.NumGoroutine(),
+		float64(mem.HeapAlloc)/1024.0/1024.0,
+		mem.PauseTotalNs,
+	)
 }
 
 func main() {

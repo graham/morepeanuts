@@ -108,6 +108,8 @@ type User struct {
 }
 
 func GetIdentityWithClient(url string, post bool, client *http.Client) (string, error) {
+	//defer timeTrack(time.Now(), "GetIdentityWithClient")
+
 	var email *http.Response
 	var err error
 

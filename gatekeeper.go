@@ -65,5 +65,5 @@ func (g DefaultGatekeeper) IsAllowed(hci *HostConfigItem, identity string, r *ht
 }
 
 func (g DefaultGatekeeper) BackpressureTime(identity string, r *http.Request) int {
-	return 250
+	return 2500
 }

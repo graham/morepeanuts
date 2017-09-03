@@ -1,29 +1,23 @@
 package suez
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
-	"github.com/BurntSushi/toml"
-	"github.com/gorilla/handlers"
 	"github.com/julienschmidt/httprouter"
 )
 
 // Reverse Proxy
-
 var netTransport = &http.Transport{
 	Dial: (&net.Dialer{
 		Timeout: 5 * time.Second,
@@ -36,144 +30,80 @@ var netClient = &http.Client{
 	Transport: netTransport,
 }
 
-// Server Config Item
-
-type ServerConfigItem struct {
-	IsSecure             bool       `toml:"secure"`
-	Bind                 string     `toml:"bind"`
-	Port                 int        `toml:"port"`
-	SSLCertificates      [][]string `toml:"ssl_cert_pairs"`
-	AutoRedirectInsecure bool       `toml:"auto_redirect_insecure"`
-	DomainToHostMap      map[string]HostConfigItem
-	NotFound             *HostConfigItem
-}
-
-func (sci *ServerConfigItem) SaneDefaults() {
-	if sci.Bind == "" {
-		sci.Bind = "127.0.0.1"
-	}
-
-	if sci.Port == 0 {
-		if sci.IsSecure {
-			sci.Port = 443
-		} else {
-			sci.Port = 80
-		}
-	}
-
-	sci.DomainToHostMap = make(map[string]HostConfigItem)
-}
-
-func (sci ServerConfigItem) Listen() {
-	if sci.IsSecure && sci.AutoRedirectInsecure == true {
-		log.Printf("Staring insecure server on port 80 to redirect to %d\n", sci.Port)
-		go http.ListenAndServe(
-			fmt.Sprintf("%s:80", sci.Bind),
-			http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				var target string
-				if sci.Port != 443 {
-					target = fmt.Sprintf("https://%s:%d%s", req.Host, sci.Port, req.URL.RequestURI())
-				} else {
-					target = fmt.Sprintf("https://%s%s", req.Host, req.URL.RequestURI())
-				}
-				http.Redirect(w,
-					req,
-					target,
-					http.StatusTemporaryRedirect,
-				)
-			}),
-		)
-	}
-
-	if sci.IsSecure == true {
-		cfg := &tls.Config{}
-
-		for _, pair := range sci.SSLCertificates {
-			cert, err := tls.LoadX509KeyPair(pair[0], pair[1])
-			if err != nil {
-				log.Fatal(err)
-			}
-			cfg.Certificates = append(cfg.Certificates, cert)
-		}
-
-		cfg.BuildNameToCertificate()
-
-		server := http.Server{
-			Addr:      fmt.Sprintf("%s:%d", sci.Bind, sci.Port),
-			Handler:   handlers.LoggingHandler(os.Stdout, sci),
-			TLSConfig: cfg,
-		}
-
-		server.ListenAndServeTLS("", "")
-	} else {
-		log.Fatal(http.ListenAndServe(
-			fmt.Sprintf("%s:%d", sci.Bind, sci.Port),
-			handlers.LoggingHandler(os.Stdout, sci)),
-		)
-	}
-}
-
-func (sci ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var hostItem HostConfigItem
-	var found bool
-
-	if hostItem, found = sci.DomainToHostMap[r.Host]; found == false {
-		if sci.NotFound == nil {
-			fmt.Fprintf(w, "Wasn't able to find: %s", r.RequestURI)
-			return
-		} else {
-			sci.NotFound.Router.ServeHTTP(w, r)
-			return
-		}
-	}
-
-	hostItem.Router.ServeHTTP(w, r)
-}
-
-// End Server Config Item
-
 // Host Config Item
 
+type HostAuthentication struct {
+	// Name of the cookie that holds user Authentication.
+	CookieName string `toml:"cookie_name"`
+
+	// How long that cookie lasts.
+	CookieDurationDays int `toml:"cookie_duration_days"`
+
+	// Oauth2 Client Id
+	ClientID string `toml:"client_id"`
+
+	// Oauth2 Client Secret
+	ClientSecret string `toml:"client_secret"`
+
+	// Scopes requested on authentication.
+	InitScopes []string `toml:"init_scopes"`
+
+	// Method for getting user information (email)
+	UserInfoUrl string `toml:"user_info_url"`
+
+	// Should the UserInfoUrl be a post request?
+	UserInfoPost bool `toml:"user_info_method_post"`
+
+	// custom endpoints as array of strings.
+	EndpointStr []string `toml:"endpoint"`
+
+	// Sane defaults will compile the array above into a
+	// go struct.}
+	Endpoint oauth2.Endpoint
+}
+
+type HostAuthorization struct {
+	// Name of cookie that holds oauth2 token.
+	CookieName string `toml:"cookie_name"`
+
+	// Should all routes require auth?
+	RequireAuth bool `toml:"require_auth"`
+
+	// If require auth == true, allow some passthrough routes.
+	PassthroughRoutes []string `toml:"passthrough_routes"`
+
+	// If require auth == false, allow some routes to be guarded.
+	GuardedRoutes []string `toml:"guarded_routes"`
+
+	// Once a user is authenticated, should you allow all users?
+	AllowAll bool `toml:"allow_all"`
+
+	// If not, what is the list of users that you want to allow.
+	AllowList []string `toml:"allow_list"`
+
+	// User defined data to be passed to the gatekeeper.
+	GatekeeperArgs interface{} `toml:"gatekeeper_args"`
+
+	// Gatekeeper interface, can be user defined.
+	Gatekeeper Gatekeeper
+}
+
 type HostConfigItem struct {
-	Domain                string `toml:"domain"`
-	Dial                  string `toml:"dial"`
-	InnerProtocol         string `toml:"protocol"`
-	CookiePassthrough     bool   `toml:"cookie_passthrough"`
-	CookieEncryptionKey   string `toml:"cookie_encryption_key"`
-	AutoRedirectInsecure  bool   `toml:"auto_redirect_insecure"`
-	RouteMount            string `toml:"route_mount"`
-	AlwaysUseCustomDialer bool   `toml:"always_use_custom_dialer"`
-
-	Authentication struct {
-		CookieName         string     `toml:"cookie_name"`
-		CookieDurationDays int        `toml:"cookie_duration_days"`
-		ClientID           string     `toml:"client_id"`
-		ClientSecret       string     `toml:"client_secret"`
-		InitScopes         []string   `toml:"init_scopes"`
-		AddValues          [][]string `toml:"add_values"`
-		UserInfoUrl        string     `toml:"user_info_url"`
-		UserInfoPost       bool       `toml:"user_info_method_post"`
-		EndpointStr        []string   `toml:"endpoint"`
-		Endpoint           oauth2.Endpoint
-	} `toml:"authentication"`
-
-	Authorization struct {
-		RequireAuth       bool        `toml:"require_auth"`
-		AllowAll          bool        `toml:"allow_all"`
-		AllowList         []string    `toml:"allow_list"`
-		CookieName        string      `toml:"cookie_name"`
-		PassthroughRoutes []string    `toml:"passthrough_routes"`
-		GuardedRoutes     []string    `toml:"guarded_routes"`
-		GatekeeperArgs    interface{} `toml:"gatekeeper_args"`
-		Gatekeeper        Gatekeeper
-	} `toml:"authorization"`
+	Domain                string             `toml:"domain"`
+	Dial                  string             `toml:"dial"`
+	InnerProtocol         string             `toml:"protocol"`
+	CookiePassthrough     bool               `toml:"cookie_passthrough"`
+	CookieEncryptionKey   string             `toml:"cookie_encryption_key"`
+	RouteMount            string             `toml:"route_mount"`
+	AlwaysUseCustomDialer bool               `toml:"always_use_custom_dialer"`
+	Authentication        HostAuthentication `toml:"authentication"`
+	Authorization         HostAuthorization  `toml:"authorization"`
 
 	Static struct {
 		DirectoryMappings [][]string `toml:"directory_mappings"`
 		StaticOnly        bool       `toml:"static_only"`
 	}
-
-	OauthConfig   *oauth2.Config
+	o
 	Router        http.Handler
 	CustomDialer  Dialer
 	OuterProtocol string
@@ -486,55 +416,3 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 }
 
 // End Host Config Item
-
-func LoadServerFromConfig(filename string) ServerConfigItem {
-	b, err := ioutil.ReadFile(filename)
-
-	if err != nil {
-		panic(err)
-	}
-
-	var config struct {
-		Server          ServerConfigItem `toml:"server"`
-		HostConfigItems []HostConfigItem `toml:"host"`
-	}
-
-	_, err = toml.Decode(string(b), &config)
-
-	if err != nil {
-		panic(err)
-	}
-
-	var protocol string
-	if config.Server.IsSecure {
-		protocol = "https"
-	} else {
-		protocol = "http"
-	}
-
-	config.Server.SaneDefaults()
-
-	for _, hci := range config.HostConfigItems {
-		var fullDomain string
-
-		if config.Server.Port == 80 || config.Server.Port == 443 {
-			fullDomain = hci.Domain
-		} else {
-			fullDomain = fmt.Sprintf("%s:%d", hci.Domain, config.Server.Port)
-		}
-
-		if hci.Domain == "*" {
-			config.Server.NotFound = &hci
-			if config.Server.IsSecure == false {
-				hci.OuterProtocol = "http"
-			}
-			config.Server.NotFound.Router = BuildRouter(hci, "")
-		} else {
-			FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
-			hci.Router = BuildRouter(hci, FQDN)
-			config.Server.DomainToHostMap[fullDomain] = hci
-		}
-	}
-
-	return config.Server
-}

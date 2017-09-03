@@ -23,8 +23,7 @@ func (mrp ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cookie, cookie_err := r.Cookie(mrp.HostItem.Authorization.CookieName)
 
 	if cookie_err == nil {
-		var err error
-		identity, err = Decrypt(
+		identity, _ = Decrypt(
 			mrp.HostItem.CookieEncryptionKey,
 			cookie.Value,
 		)

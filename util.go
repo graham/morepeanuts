@@ -90,11 +90,12 @@ func OptionsFromQuery(hostItem HostConfigItem, values url.Values) []oauth2.AuthC
 		options = append(options, oauth2.AccessTypeOffline)
 	}
 
-	// Since oauth2.AccessTypeOnline is default, we'll just leave.
-
-	for _, row := range hostItem.Authentication.AddValues {
-		options = append(options, oauth2.SetAuthURLParam(row[0], row[1]))
-	}
+	// Previously implemented in case some extra fields would need to
+	// be passed along with the oauth request. Doesn't appear to be needed
+	// anymore.
+	// for _, row := range hostItem.Authentication.AddOauthValues {
+	// 	options = append(options, oauth2.SetAuthURLParam(row[0], row[1]))
+	// }
 
 	return options
 }

@@ -103,7 +103,7 @@ type HostConfigItem struct {
 		DirectoryMappings [][]string `toml:"directory_mappings"`
 		StaticOnly        bool       `toml:"static_only"`
 	}
-	o
+
 	Router        http.Handler
 	CustomDialer  Dialer
 	OuterProtocol string

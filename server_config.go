@@ -60,7 +60,13 @@ func (sci ServerConfigItem) Listen() {
 	}
 
 	if sci.IsSecure == true {
-		cfg := &tls.Config{}
+		cfg := &tls.Config{
+			PreferServerCipherSuites: true,
+			CurvePreferences: []tls.CurveID{
+				tls.CurveP256,
+				//tls.X25519,
+			},
+		}
 
 		for _, pair := range sci.SSLCertificates {
 			cert, err := tls.LoadX509KeyPair(pair[0], pair[1])

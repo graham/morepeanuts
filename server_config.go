@@ -1,25 +1,29 @@
 package suez
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/gorilla/handlers"
 )
 
 type ServerConfigItem struct {
-	IsSecure             bool       `toml:"secure"`
-	Bind                 string     `toml:"bind"`
-	Port                 int        `toml:"port"`
-	SSLCertificates      [][]string `toml:"ssl_cert_pairs"`
-	AutoRedirectInsecure bool       `toml:"auto_redirect_insecure"`
-	DomainToHostMap      map[string]HostConfigItem
-	NotFound             *HostConfigItem
+	IsSecure                 bool       `toml:"secure"`
+	Bind                     string     `toml:"bind"`
+	Port                     int        `toml:"port"`
+	SSLCertificates          [][]string `toml:"ssl_cert_pairs"`
+	AutoRedirectInsecure     bool       `toml:"auto_redirect_insecure"`
+	AutoReloadOnConfigChange bool       `toml:"auto_reload_on_config_change"`
+	DomainToHostMap          map[string]HostConfigItem
+	NotFound                 *HostConfigItem
+	server                   *http.Server
 }
 
 func (sci *ServerConfigItem) SaneDefaults() {
@@ -38,7 +42,18 @@ func (sci *ServerConfigItem) SaneDefaults() {
 	sci.DomainToHostMap = make(map[string]HostConfigItem)
 }
 
-func (sci ServerConfigItem) Listen() {
+func (sci *ServerConfigItem) Stop() {
+	if sci.server == nil {
+		fmt.Println("Server variable is null.")
+		return
+	}
+
+	fmt.Println("Stopping")
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+	sci.server.Shutdown(ctx)
+}
+
+func (sci *ServerConfigItem) Listen() {
 	if sci.IsSecure && sci.AutoRedirectInsecure == true {
 		log.Printf("Staring insecure server on port 80 to redirect to %d\n", sci.Port)
 		go http.ListenAndServe(
@@ -78,22 +93,23 @@ func (sci ServerConfigItem) Listen() {
 
 		cfg.BuildNameToCertificate()
 
-		server := http.Server{
+		sci.server = &http.Server{
 			Addr:      fmt.Sprintf("%s:%d", sci.Bind, sci.Port),
 			Handler:   handlers.LoggingHandler(os.Stdout, sci),
 			TLSConfig: cfg,
 		}
 
-		server.ListenAndServeTLS("", "")
+		sci.server.ListenAndServeTLS("", "")
 	} else {
-		log.Fatal(http.ListenAndServe(
-			fmt.Sprintf("%s:%d", sci.Bind, sci.Port),
-			handlers.LoggingHandler(os.Stdout, sci)),
-		)
+		sci.server = &http.Server{
+			Addr:    fmt.Sprintf("%s:%d", sci.Bind, sci.Port),
+			Handler: handlers.LoggingHandler(os.Stdout, sci),
+		}
+		sci.server.ListenAndServe()
 	}
 }
 
-func (sci ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (sci *ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var hostItem HostConfigItem
 	var found bool
 

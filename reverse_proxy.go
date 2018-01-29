@@ -91,5 +91,6 @@ func (mrp ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	} else {
 		mrp.Proxy.ServeHTTP(w, r)
+		return
 	}
 }

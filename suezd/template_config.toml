@@ -13,7 +13,7 @@
 [[host]]
     # Google Example
     domain = "calendar.example.com"
-    dial = "http://127.0.0.1:3000"
+    dial = "127.0.0.1:3000"
 
     cookie_passthrough = true
     cookie_encryption_key = "aaaaaaaaaaaaaaaa"
@@ -36,7 +36,7 @@
 [[host]]
     # Dropbox Example
     domain = "dropbox.example.com"
-    dial = "http://127.0.0.1:3001"
+    dial = "127.0.0.1:3001"
 
     cookie_passthrough = true
     cookie_encryption_key = "aaaaaaaaaaaaaaaa"

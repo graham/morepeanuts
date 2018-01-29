@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"runtime"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/graham/suez"
 )
 
@@ -19,17 +21,53 @@ func reportMemory() {
 }
 
 func main() {
+	var FILENAME string = "config.toml"
+
 	done := make(chan bool, 1)
 
 	go func() {
 		for {
 			reportMemory()
-			time.Sleep(15 * time.Second)
+			time.Sleep(600 * time.Second)
 		}
 	}()
 
-	server := suez.LoadServerFromConfig("config.toml")
-	server.Listen()
+	server := suez.LoadServerFromConfig(FILENAME)
+
+	if server.AutoReloadOnConfigChange {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer watcher.Close()
+
+
+		go func() {
+			for {
+				select {
+				case event := <-watcher.Events:
+					fmt.Println("File Event", event.Name)
+					if event.Op&fsnotify.Write == fsnotify.Write &&
+						event.Name == FILENAME {
+						server.Stop()
+						server = suez.LoadServerFromConfig(FILENAME)
+						go func() {
+							server.Listen()
+						}()
+					}
+				case err := <-watcher.Errors:
+					log.Println("error:", err)
+				}
+			}
+		}()
+
+		fmt.Println("adding watcher...")
+		err = watcher.Add(FILENAME)
+	}
+
+	go func() {
+		server.Listen()
+	}()
 
 	<-done
 }

@@ -3,6 +3,7 @@ package suez
 import (
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"strings"
@@ -90,7 +91,11 @@ func (mrp ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		handler.ServeHTTP(w, r)
 		return
 	} else {
+		start := time.Now()
 		mrp.Proxy.ServeHTTP(w, r)
+		done := time.Now()
+		dur := done.Sub(start)
+		log.Printf("%s : took %dus (%dms)", r.URL.Path, dur, dur / 1000000)
 		return
 	}
 }

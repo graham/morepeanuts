@@ -146,14 +146,6 @@ func (hci *HostConfigItem) SaneDefaults() {
 		hci.Authentication.CookieDurationDays = 1
 	}
 
-	if hci.Authentication.ClientID == "" {
-		panic("[host.authentication] must contain a client_id")
-	}
-
-	if hci.Authentication.ClientSecret == "" {
-		panic("[host.authentication] must contain a client_secret")
-	}
-
 	if len(hci.Authentication.InitScopes) == 0 {
 		log.Println("No init scopes set, using default: [https://www.googleapis.com/auth/userinfo.email]")
 		hci.Authentication.InitScopes = []string{"https://www.googleapis.com/auth/userinfo.email"}

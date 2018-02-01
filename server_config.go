@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -112,8 +113,16 @@ func (sci *ServerConfigItem) Listen() {
 func (sci *ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var hostItem HostConfigItem
 	var found bool
+	var host string
 
-	if hostItem, found = sci.DomainToHostMap[r.Host]; found == false {
+	if strings.Contains(r.Host, ":") {
+		result := strings.Split(r.Host, ":")
+		host = result[0]
+	} else {
+		host = r.Host
+	}
+
+	if hostItem, found = sci.DomainToHostMap[host]; found == false {
 		if sci.NotFound == nil {
 			fmt.Fprintf(w, "Wasn't able to find: %s", r.RequestURI)
 			return

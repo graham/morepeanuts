@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -122,7 +123,11 @@ func (sci *ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		host = r.Host
 	}
 
-	if hostItem, found = sci.DomainToHostMap[host]; found == false {
+	if hostItem, found = sci.DomainToHostMap[host]; found == true {
+		hostItem.Router.ServeHTTP(w, r)
+	} else if hostItem, found = sci.RegexMatchHostRequest(host); found == true {
+		hostItem.Router.ServeHTTP(w, r)
+	} else {
 		if sci.NotFound == nil {
 			fmt.Fprintf(w, "Wasn't able to find: %s", r.RequestURI)
 			return
@@ -131,8 +136,18 @@ func (sci *ServerConfigItem) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
 
-	hostItem.Router.ServeHTTP(w, r)
+func (sci *ServerConfigItem) RegexMatchHostRequest(host string) (HostConfigItem, bool) {
+	for _, v := range sci.DomainToHostMap {
+		if v.RegexMatcher != nil {
+			if v.RegexMatcher.MatchString(host) {
+				return v, true
+			}
+		}
+	}
+
+	return HostConfigItem{}, false
 }
 
 func LoadServerFromConfig(filename string) ServerConfigItem {
@@ -168,7 +183,8 @@ func LoadServerFromConfig(filename string) ServerConfigItem {
 		if config.Server.Port == 80 || config.Server.Port == 443 {
 			fullDomain = hci.Domain
 		} else {
-			fullDomain = fmt.Sprintf("%s:%d", hci.Domain, config.Server.Port)
+			//fullDomain = fmt.Sprintf("%s:%d", hci.Domain, config.Server.Port)
+			fullDomain = hci.Domain
 		}
 
 		if hci.Domain == "*" {
@@ -180,6 +196,16 @@ func LoadServerFromConfig(filename string) ServerConfigItem {
 		} else {
 			FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
 			hci.Router = BuildRouter(hci, FQDN)
+
+			if hci.Domain[0] == '^' {
+				c, err := regexp.Compile(hci.Domain)
+				if err != nil {
+					fmt.Printf("Failed to compile regex of %s -> %s\n", err, hci.Domain)
+				} else {
+					hci.RegexMatcher = c
+				}
+			}
+
 			config.Server.DomainToHostMap[fullDomain] = hci
 		}
 	}

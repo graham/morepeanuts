@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -108,6 +109,7 @@ type HostConfigItem struct {
 	CustomDialer  Dialer
 	OuterProtocol string
 	Logger        Logger
+	RegexMatcher  *regexp.Regexp
 }
 
 func (hci *HostConfigItem) SaneDefaults() {
@@ -122,8 +124,8 @@ func (hci *HostConfigItem) SaneDefaults() {
 		hci.Domain = "127.0.0.1"
 	}
 
-	if hci.Dial == "" {
-		panic("Must specify a 'dial' target under [host]")
+	if len(hci.Dial) == 0 {
+		hci.Dial = "127.0.0.1"
 	}
 
 	if hci.InnerProtocol == "" {
@@ -178,6 +180,7 @@ func (hci *HostConfigItem) SaneDefaults() {
 
 func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 	hci.SaneDefaults()
+
 	router := httprouter.New()
 
 	if len(hci.Static.DirectoryMappings) > 0 {
@@ -186,10 +189,10 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 			fileSystemPath := pair[1]
 			router.ServeFiles(publicPath, http.Dir(fileSystemPath))
 		}
+	}
 
-		if hci.Static.StaticOnly {
-			return router
-		}
+	if hci.Static.StaticOnly {
+		return router
 	}
 
 	identUrl := hci.Authentication.UserInfoUrl

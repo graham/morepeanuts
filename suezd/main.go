@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"runtime"
@@ -20,8 +21,11 @@ func reportMemory() {
 	)
 }
 
+var FILENAME *string = flag.String("config", "config.toml", "config file name")
+
 func main() {
-	var FILENAME string = "config.toml"
+	flag.Parse()
+	log.SetFlags(0)
 
 	done := make(chan bool, 1)
 
@@ -32,7 +36,11 @@ func main() {
 		}
 	}()
 
-	server := suez.LoadServerFromConfig(FILENAME)
+	var filename string = *FILENAME
+
+	fmt.Printf("Loading config: %s\n", filename)
+
+	server := suez.LoadServerFromConfig(filename)
 
 	if server.AutoReloadOnConfigChange {
 		watcher, err := fsnotify.NewWatcher()
@@ -41,16 +49,15 @@ func main() {
 		}
 		defer watcher.Close()
 
-
 		go func() {
 			for {
 				select {
 				case event := <-watcher.Events:
 					fmt.Println("File Event", event.Name)
 					if event.Op&fsnotify.Write == fsnotify.Write &&
-						event.Name == FILENAME {
+						event.Name == filename {
 						server.Stop()
-						server = suez.LoadServerFromConfig(FILENAME)
+						server = suez.LoadServerFromConfig(filename)
 						go func() {
 							server.Listen()
 						}()
@@ -62,7 +69,7 @@ func main() {
 		}()
 
 		fmt.Println("adding watcher...")
-		err = watcher.Add(FILENAME)
+		err = watcher.Add(filename)
 	}
 
 	go func() {

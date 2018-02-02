@@ -18,6 +18,7 @@ import (
 
 type ServerConfigItem struct {
 	IsSecure                 bool       `toml:"secure"`
+	RedirectSecure           bool       `toml:"redirect_secure"`
 	Bind                     string     `toml:"bind"`
 	Port                     int        `toml:"port"`
 	SSLCertificates          [][]string `toml:"ssl_cert_pairs"`
@@ -189,8 +190,10 @@ func LoadServerFromConfig(filename string) ServerConfigItem {
 
 		if hci.Domain == "*" {
 			config.Server.NotFound = &hci
-			if config.Server.IsSecure == false {
+			if config.Server.RedirctSecure == false {
 				hci.OuterProtocol = "http"
+			} else {
+				hci.OuterProtocol = "https"
 			}
 			config.Server.NotFound.Router = BuildRouter(hci, "")
 		} else {

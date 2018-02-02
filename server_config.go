@@ -190,7 +190,7 @@ func LoadServerFromConfig(filename string) ServerConfigItem {
 
 		if hci.Domain == "*" {
 			config.Server.NotFound = &hci
-			if config.Server.RedirctSecure == false {
+			if config.Server.RedirectSecure == false {
 				hci.OuterProtocol = "http"
 			} else {
 				hci.OuterProtocol = "https"

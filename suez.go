@@ -236,7 +236,7 @@ func BuildRouter(hci HostConfigItem, FQDN string) *httprouter.Router {
 
 			options := OptionsFromQuery(hci, queryValues)
 			if len(FQDN) == 0 {
-				OauthConfig.RedirectURL = fmt.Sprintf("%s://%s/%sauth", hci.OuterProtcool, r.Host, hci.RouteMount)
+				OauthConfig.RedirectURL = fmt.Sprintf("%s://%s/%sauth", hci.OuterProtocol, r.Host, hci.RouteMount)
 			}
 			url := OauthConfig.AuthCodeURL(randomToken, options...)
 			fmt.Fprintln(w, HtmlRedirect(url))

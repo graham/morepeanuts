@@ -169,13 +169,6 @@ func LoadServerFromConfig(filename string) ServerConfigItem {
 		panic(err)
 	}
 
-	var protocol string
-	if config.Server.IsSecure {
-		protocol = "https"
-	} else {
-		protocol = "http"
-	}
-
 	config.Server.SaneDefaults()
 
 	for _, hci := range config.HostConfigItems {
@@ -197,7 +190,7 @@ func LoadServerFromConfig(filename string) ServerConfigItem {
 			}
 			config.Server.NotFound.Router = BuildRouter(hci, "")
 		} else {
-			FQDN := fmt.Sprintf("%s://%s", protocol, fullDomain)
+			FQDN := fmt.Sprintf("%s://%s", hci.OuterProtocol, fullDomain)
 			hci.Router = BuildRouter(hci, FQDN)
 
 			if hci.Domain[0] == '^' {

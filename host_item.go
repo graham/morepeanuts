@@ -12,7 +12,8 @@ import (
 type HostConfigItem struct {
 	Domain                string             `toml:"domain"`
 	Dial                  string             `toml:"dial"`
-	InnerProtocol         string             `toml:"protocol"`
+	InnerProtocol         string             `toml:"inner_protocol"`
+	OuterProtocol         string             `toml:"outer_protocol"`
 	CookiePassthrough     bool               `toml:"cookie_passthrough"`
 	CookieEncryptionKey   string             `toml:"cookie_encryption_key"`
 	RouteMount            string             `toml:"route_mount"`
@@ -25,11 +26,10 @@ type HostConfigItem struct {
 		StaticOnly        bool       `toml:"static_only"`
 	}
 
-	Router        http.Handler
-	CustomDialer  Dialer
-	OuterProtocol string
-	Logger        Logger
-	RegexMatcher  *regexp.Regexp
+	Router       http.Handler
+	CustomDialer Dialer
+	Logger       Logger
+	RegexMatcher *regexp.Regexp
 }
 
 func (hci *HostConfigItem) SaneDefaults() {
